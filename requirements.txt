@@ -3,3 +3,4 @@ mcp>=1.0.0              # MCP SDK with FastMCP
 ib_insync>=0.9.86       # IBKR API wrapper (or ib_async as drop-in replacement)
 pydantic>=2.0.0         # Input validation (included with mcp, but pinning)
 python-dotenv>=1.0.0    # Load .env files
+nest_asyncio>=1.6.0     # Allows nested event loops (ib_insync inside FastMCP's loop)

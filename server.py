@@ -16,6 +16,14 @@ Usage:
     }
 """
 
+# Patch asyncio BEFORE anything else imports or creates an event loop.
+# ib_insync 0.9.86 removed its automatic nest_asyncio patching, but
+# FastMCP runs its own event loop — without this patch, any ib_insync
+# code path that calls loop.run_until_complete() will raise
+# "RuntimeError: This event loop is already running".
+import nest_asyncio
+nest_asyncio.apply()
+
 from app import mcp  # noqa: F401 — must import so tool modules can find it
 
 # --- Register tool modules ---
