@@ -12,7 +12,6 @@ connection per tool call would be slow (~4s handshake + sync) and wasteful.
 The lifespan pattern keeps one connection alive for the server's lifetime.
 """
 
-import asyncio
 import logging
 import os
 import sys
@@ -47,38 +46,22 @@ async def ib_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """
     ib = IB()
 
+    # Use PID-based client ID to avoid collisions from stale connections.
+    # IB Gateway holds onto client IDs from unclean disconnects — using a
+    # unique ID per process sidesteps the problem entirely.
+    client_id = IB_CLIENT_ID + (os.getpid() % 9000)
+
     try:
         logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} "
-                     f"(clientId={IB_CLIENT_ID}, readonly={IB_READONLY})...")
+                     f"(clientId={client_id}, readonly={IB_READONLY})...")
 
-        try:
-            await ib.connectAsync(
-                host=IB_HOST,
-                port=IB_PORT,
-                clientId=IB_CLIENT_ID,
-                timeout=IB_TIMEOUT,
-                readonly=IB_READONLY,
-            )
-        except Exception as first_err:
-            # Client ID likely stale from a previous unclean disconnect.
-            # Bump to a temp ID, connect to force IB to drop the old one,
-            # disconnect, then reconnect with our real ID.
-            if "already in use" in str(first_err) or "Peer closed" in str(first_err):
-                logger.warning(f"Client ID {IB_CLIENT_ID} in use — forcing reconnect...")
-                temp_id = IB_CLIENT_ID + 1000 + os.getpid() % 1000
-                ib_temp = IB()
-                await ib_temp.connectAsync(
-                    host=IB_HOST, port=IB_PORT,
-                    clientId=temp_id, timeout=IB_TIMEOUT, readonly=IB_READONLY,
-                )
-                ib_temp.disconnect()
-                await asyncio.sleep(1)
-                await ib.connectAsync(
-                    host=IB_HOST, port=IB_PORT,
-                    clientId=IB_CLIENT_ID, timeout=IB_TIMEOUT, readonly=IB_READONLY,
-                )
-            else:
-                raise
+        await ib.connectAsync(
+            host=IB_HOST,
+            port=IB_PORT,
+            clientId=client_id,
+            timeout=IB_TIMEOUT,
+            readonly=IB_READONLY,
+        )
 
         # Determine primary account
         accounts = ib.managedAccounts()
