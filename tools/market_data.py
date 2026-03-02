@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from ib_insync import Stock, Contract
 
-from server import mcp
+from app import mcp
 from core.connection import get_ib
 from core.errors import handle_ib_error
 from core.formatting import fmt_price, fmt_pct, fmt_shares

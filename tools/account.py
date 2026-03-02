@@ -12,7 +12,7 @@ from mcp.server.fastmcp import Context
 from pydantic import BaseModel, Field
 
 # Import the mcp instance from server (registered via decorator)
-from server import mcp
+from app import mcp
 from core.connection import get_ib, resolve_account
 from core.errors import handle_ib_error
 from core.formatting import fmt_price, fmt_pct, fmt_pnl
