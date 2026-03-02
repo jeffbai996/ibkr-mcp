@@ -31,6 +31,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ibkr_mcp.connection")
 
+# Suppress ib_insync's verbose sync chatter (positions, commissions, etc.)
+# These flood stderr on connect and can cause MCP startup timeout issues.
+logging.getLogger("ib_insync.wrapper").setLevel(logging.WARNING)
+logging.getLogger("ib_insync.client").setLevel(logging.WARNING)
+
 
 @asynccontextmanager
 async def ib_lifespan(server: FastMCP) -> AsyncIterator[dict]:
