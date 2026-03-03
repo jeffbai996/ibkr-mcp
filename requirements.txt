@@ -4,6 +4,7 @@ ib_insync>=0.9.86       # IBKR API wrapper (or ib_async as drop-in replacement)
 pydantic>=2.0.0         # Input validation (included with mcp, but pinning)
 python-dotenv>=1.0.0    # Load .env files
 nest_asyncio>=1.6.0     # Allows nested event loops (ib_insync inside FastMCP's loop)
+uvicorn>=0.30.0         # ASGI server for streamable-http transport (server_http.py)
 
 # Dev / testing
 pytest>=8.0.0

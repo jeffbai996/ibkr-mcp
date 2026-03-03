@@ -62,7 +62,8 @@ async def ibkr_get_quote(params: QuoteInput, ctx: Context) -> str:
     """Get current market data for a symbol: last price, bid/ask, volume, change.
 
     Requests a snapshot of market data from IBKR. Works during market hours
-    for real-time data, or returns delayed/frozen data outside hours.
+    for real-time data. Outside RTH, automatically falls back to historical
+    bars to get extended hours / pre-market prices.
 
     Args:
         params (QuoteInput): Symbol and contract specification.
@@ -82,51 +83,113 @@ async def ibkr_get_quote(params: QuoteInput, ctx: Context) -> str:
                 currency=params.currency,
             )
 
-        # Qualify the contract (resolve to specific conId)
         contracts = await ib.qualifyContractsAsync(contract)
         if not contracts:
             return f"Could not find contract for {params.symbol}."
 
         qualified = contracts[0]
 
-        # Request snapshot market data
+        # Try snapshot first — works during RTH
         ib.reqMktData(qualified, "", True, False)
-        await asyncio.sleep(2)  # Give IB time to send data
+        await asyncio.sleep(2)
 
         ticker = ib.ticker(qualified)
 
-        if ticker is None:
-            return f"No market data available for {params.symbol}."
-
-        # IB uses float('nan') for unset fields — x != x is the NaN test
         def _val(x):
             return x if x == x else None
 
-        close = _val(ticker.close)
-        last = _val(ticker.last) or close  # fall back to close, then None
-        bid = _val(ticker.bid)
-        ask = _val(ticker.ask)
-        spread = Decimal(str(ask)) - Decimal(str(bid)) if bid and ask else None
-        volume = _val(ticker.volume)
-        change = Decimal(str(last)) - Decimal(str(close)) if last and close else None
-        change_pct = change / Decimal(str(close)) * 100 if change and close else None
+        # Check if snapshot returned usable data
+        has_snapshot = ticker is not None and (
+            _val(ticker.last) is not None or _val(ticker.bid) is not None
+        )
+
+        if has_snapshot:
+            close = _val(ticker.close)
+            last = _val(ticker.last) or close
+            bid = _val(ticker.bid)
+            ask = _val(ticker.ask)
+            spread = Decimal(str(ask)) - Decimal(str(bid)) if bid and ask else None
+            volume = _val(ticker.volume)
+            change = Decimal(str(last)) - Decimal(str(close)) if last and close else None
+            change_pct = (
+                change / Decimal(str(close)) * 100 if change and close else None
+            )
+
+            ccy = params.currency
+            lines = [
+                f"# {params.symbol} Quote",
+                "",
+                f"**Last**: {fmt_price(last, ccy)}",
+                f"**Bid**: {fmt_price(bid, ccy)}",
+                f"**Ask**: {fmt_price(ask, ccy)}",
+                f"**Spread**: {fmt_price(spread, '')}",
+                f"**Volume**: {f'{int(volume):,}' if volume else 'N/A'}",
+                "",
+                f"**Close**: {fmt_price(close, ccy)}",
+                f"**Change**: {fmt_pnl(change, ccy) if change else 'N/A'}",
+                f"**Change %**: {fmt_pct(change_pct) if change_pct else 'N/A'}",
+            ]
+            return "\n".join(lines)
+
+        # Snapshot returned nothing — fall back to historical bars for
+        # extended hours / pre-market / overnight data
+        ext_bars, rth_bars = await asyncio.gather(
+            ib.reqHistoricalDataAsync(
+                qualified,
+                endDateTime="",
+                durationStr="1 D",
+                barSizeSetting="1 min",
+                whatToShow="TRADES",
+                useRTH=False,
+            ),
+            ib.reqHistoricalDataAsync(
+                qualified,
+                endDateTime="",
+                durationStr="2 D",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=True,
+            ),
+        )
+
+        if not ext_bars:
+            return f"No market data available for {params.symbol}."
+
+        last_bar = ext_bars[-1]
+        last = last_bar.close
+        ext_high = max(b.high for b in ext_bars)
+        ext_low = min(b.low for b in ext_bars)
+        ext_volume = sum(b.volume for b in ext_bars if b.volume > 0)
+
+        # Previous RTH close for change calculation
+        prev_close = rth_bars[-1].close if rth_bars else None
+        change = (
+            Decimal(str(last)) - Decimal(str(prev_close))
+            if last and prev_close
+            else None
+        )
+        change_pct = (
+            change / Decimal(str(prev_close)) * 100
+            if change and prev_close
+            else None
+        )
 
         ccy = params.currency
+        bar_time = str(last_bar.date)
 
         lines = [
-            f"# {params.symbol} Quote",
+            f"# {params.symbol} Quote (Extended Hours)",
+            f"*Last trade: {bar_time}*",
             "",
             f"**Last**: {fmt_price(last, ccy)}",
-            f"**Bid**: {fmt_price(bid, ccy)}",
-            f"**Ask**: {fmt_price(ask, ccy)}",
-            f"**Spread**: {fmt_price(spread, '')}",
-            f"**Volume**: {f'{int(volume):,}' if volume else 'N/A'}",
+            f"**Session High**: {fmt_price(ext_high, ccy)}",
+            f"**Session Low**: {fmt_price(ext_low, ccy)}",
+            f"**Volume**: {f'{int(ext_volume):,}' if ext_volume else 'N/A'}",
             "",
-            f"**Close**: {fmt_price(close, ccy)}",
+            f"**Prev Close**: {fmt_price(prev_close, ccy)}",
             f"**Change**: {fmt_pnl(change, ccy) if change else 'N/A'}",
             f"**Change %**: {fmt_pct(change_pct) if change_pct else 'N/A'}",
         ]
-
         return "\n".join(lines)
 
     except Exception as e:
