@@ -5,6 +5,7 @@ Provides account-level information: NAV, margin requirements, buying power,
 excess liquidity, and P&L. These are the numbers you check first.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import Optional
 
@@ -259,7 +260,7 @@ async def ibkr_get_account_pnl(params: AccountInput, ctx: Context) -> str:
         pnl = ib.reqPnL(account)
 
         # Give IB a moment to populate the data
-        await ib.sleepAsync(0.5)
+        await asyncio.sleep(0.5)
 
         lines = [
             f"# Account P&L: {account}",

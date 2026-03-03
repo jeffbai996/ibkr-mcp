@@ -4,6 +4,7 @@ Market data tools for ibkr_mcp.
 Quotes, historical bars, and contract details. The data layer.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import Optional
 
@@ -90,7 +91,7 @@ async def ibkr_get_quote(params: QuoteInput, ctx: Context) -> str:
 
         # Request snapshot market data
         ib.reqMktData(qualified, "", True, False)
-        await ib.sleepAsync(2)  # Give IB time to send data
+        await asyncio.sleep(2)  # Give IB time to send data
 
         ticker = ib.ticker(qualified)
 

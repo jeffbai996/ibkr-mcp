@@ -6,6 +6,7 @@ These automate the margin math Jeff and Claude were doing manually
 during the Iran crisis — one sentence instead of 20 minutes of math.
 """
 
+import asyncio
 from decimal import Decimal
 from typing import Optional
 
@@ -89,7 +90,7 @@ async def ibkr_what_if_sell(params: WhatIfInput, ctx: Context) -> str:
 
         # whatIfOrder returns an OrderState with margin impact
         what_if = ib.whatIfOrder(contracts[0], order)
-        await ib.sleepAsync(1)
+        await asyncio.sleep(1)
 
         if not what_if or what_if.initMarginChange is None:
             return (f"What-if simulation failed for selling {params.quantity} "
@@ -184,7 +185,7 @@ async def ibkr_what_if_buy(params: WhatIfInput, ctx: Context) -> str:
         order.account = account
 
         what_if = ib.whatIfOrder(contracts[0], order)
-        await ib.sleepAsync(1)
+        await asyncio.sleep(1)
 
         if not what_if or what_if.initMarginChange is None:
             return (f"What-if simulation failed for buying {params.quantity} "
