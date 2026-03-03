@@ -1,6 +1,7 @@
 """Tests for core/formatting.py — financial value formatting with Decimal precision."""
 
 import json
+import math
 from decimal import Decimal
 
 import pytest
@@ -45,6 +46,12 @@ class TestFmtPrice:
     def test_small_fraction(self):
         assert fmt_price(0.01) == "$0.01 USD"
 
+    def test_float_nan_returns_na(self):
+        assert fmt_price(float("nan")) == "N/A"
+
+    def test_decimal_nan_returns_na(self):
+        assert fmt_price(Decimal("NaN")) == "N/A"
+
 
 # --- fmt_pct ---
 
@@ -74,6 +81,12 @@ class TestFmtPct:
     def test_large_percentage(self):
         assert fmt_pct(150.5) == "+150.50%"
 
+    def test_float_nan_returns_na(self):
+        assert fmt_pct(float("nan")) == "N/A"
+
+    def test_decimal_nan_returns_na(self):
+        assert fmt_pct(Decimal("NaN")) == "N/A"
+
 
 # --- fmt_pnl ---
 
@@ -98,6 +111,12 @@ class TestFmtPnl:
 
     def test_large_loss(self):
         assert fmt_pnl(-1_000_000) == "$-1,000,000.00 USD"
+
+    def test_float_nan_returns_na(self):
+        assert fmt_pnl(float("nan")) == "N/A"
+
+    def test_decimal_nan_returns_na(self):
+        assert fmt_pnl(Decimal("NaN")) == "N/A"
 
 
 # --- fmt_shares ---
@@ -124,6 +143,9 @@ class TestFmtShares:
     def test_float_that_is_whole(self):
         # 100.0 should format as whole number
         assert fmt_shares(100.0) == "100"
+
+    def test_float_nan_returns_na(self):
+        assert fmt_shares(float("nan")) == "N/A"
 
 
 # --- to_json / _json_default ---
