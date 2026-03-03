@@ -1,6 +1,6 @@
-# ibkr_mcp — Interactive Brokers MCP Server
+# ibkr_terminal — Interactive Brokers MCP Server
 
-Talk to your IBKR portfolio in natural language through Claude Code.
+Talk about, analyze, research, or optimize your Interactive Brokers portfolio in natural language in your terminal, courtesy of Claude Code.
 
 ## What This Does
 
@@ -104,27 +104,6 @@ Open Claude Code and talk to your portfolio:
 > Show me literal:partner's positions (account literal:UXXXXXXX)
 > What's my CAD vs USD exposure?
 ```
-
-## Architecture
-
-```
-ibkr-mcp/
-├── server.py              ← Entry point. FastMCP + lifespan.
-├── config.py              ← Settings from .env
-├── core/
-│   ├── connection.py      ← IB Gateway lifespan (connect/disconnect)
-│   ├── formatting.py      ← Price/P&L/percentage formatting
-│   └── errors.py          ← Error handling
-└── tools/
-    ├── account.py         ← Account summary, margin, P&L
-    ├── portfolio.py       ← Positions, snapshots, currency breakdown
-    ├── market_data.py     ← Quotes, historical bars, contract details
-    └── analytics.py       ← What-if, stress tests, concentration
-```
-
-**Key Design Decision**: The IB connection persists via FastMCP's lifespan pattern.
-Connect once on startup, stay connected, disconnect on shutdown. Tools share one
-IB instance — no reconnection per call.
 
 ## Tool Reference
 
