@@ -7,7 +7,7 @@ during the Iran crisis — one sentence instead of 20 minutes of math.
 """
 
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from mcp.server.fastmcp import Context
@@ -455,7 +455,7 @@ def _get_dec(vals: dict, tag: str) -> Decimal | None:
         return None
     try:
         return Decimal(str(entry[0]))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, InvalidOperation):
         return None
 
 
@@ -465,5 +465,5 @@ def _safe_dec(value) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, InvalidOperation):
         return None

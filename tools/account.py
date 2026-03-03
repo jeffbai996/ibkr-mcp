@@ -6,7 +6,7 @@ excess liquidity, and P&L. These are the numbers you check first.
 """
 
 import asyncio
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from mcp.server.fastmcp import Context
@@ -288,5 +288,5 @@ def _get_decimal(vals: dict, tag: str) -> Decimal | None:
         return None
     try:
         return Decimal(str(entry[0]))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, InvalidOperation):
         return None

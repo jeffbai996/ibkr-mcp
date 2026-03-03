@@ -4,7 +4,7 @@ Portfolio tools for ibkr_mcp.
 Position-level data: what you own, what it's worth, how it's performing.
 """
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from mcp.server.fastmcp import Context
@@ -288,5 +288,5 @@ def _get_dec(vals: dict, tag: str) -> Decimal | None:
         return None
     try:
         return Decimal(str(entry[0]))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, InvalidOperation):
         return None
