@@ -98,12 +98,16 @@ async def ibkr_get_quote(params: QuoteInput, ctx: Context) -> str:
         if ticker is None:
             return f"No market data available for {params.symbol}."
 
-        last = ticker.last if ticker.last == ticker.last else ticker.close
-        bid = ticker.bid if ticker.bid == ticker.bid else None
-        ask = ticker.ask if ticker.ask == ticker.ask else None
+        # IB uses float('nan') for unset fields — x != x is the NaN test
+        def _val(x):
+            return x if x == x else None
+
+        close = _val(ticker.close)
+        last = _val(ticker.last) or close  # fall back to close, then None
+        bid = _val(ticker.bid)
+        ask = _val(ticker.ask)
         spread = Decimal(str(ask)) - Decimal(str(bid)) if bid and ask else None
-        volume = ticker.volume if ticker.volume == ticker.volume else None
-        close = ticker.close if ticker.close == ticker.close else None
+        volume = _val(ticker.volume)
         change = Decimal(str(last)) - Decimal(str(close)) if last and close else None
         change_pct = change / Decimal(str(close)) * 100 if change and close else None
 
