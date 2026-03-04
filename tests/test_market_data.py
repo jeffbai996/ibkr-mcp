@@ -94,8 +94,9 @@ class TestGetQuote:
 
         result = await ibkr_get_quote(QuoteInput(symbol="AAPL"), ctx)
 
-        # Should not crash, should have N/A for volume
-        assert "N/A" in result
+        # All price fields NaN → has_snapshot=False → falls back to
+        # historical bars → mock returns empty → correct "no data" message
+        assert "No market data available" in result
 
     @pytest.mark.anyio
     async def test_contract_not_found(self):
