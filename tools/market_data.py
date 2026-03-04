@@ -390,51 +390,51 @@ async def ibkr_get_dividends(params: DividendInput, ctx: Context) -> str:
 
         qualified = contracts[0]
 
-        # Generic tick 456 = dividend data
+        # Generic tick 456 = dividend data.
+        # Streaming mode (not snapshot) because tick 456 may not
+        # populate in snapshot mode. try/finally guarantees cleanup.
         ib.reqMktData(qualified, "456", False, False)
-        await asyncio.sleep(2)
+        try:
+            await asyncio.sleep(2)
 
-        ticker = ib.ticker(qualified)
+            ticker = ib.ticker(qualified)
 
-        if not ticker or not ticker.dividends:
-            # Cancel subscription and bail
+            if not ticker or not ticker.dividends:
+                return f"No dividend data available for {params.symbol}."
+
+            div = ticker.dividends
+            last_price = ticker.last if ticker.last and not math.isnan(ticker.last) else None
+            if not last_price and ticker.close and not math.isnan(ticker.close):
+                last_price = ticker.close
+
+            lines = [
+                f"# {params.symbol} Dividends",
+                "",
+            ]
+
+            if div.nextDate:
+                lines.append(f"**Next Ex-Date**: {div.nextDate}")
+            if div.nextAmount:
+                lines.append(f"**Next Amount**: ${div.nextAmount:.4f} per share")
+
+            if div.past12Months is not None:
+                lines.append(f"**Past 12 Months**: ${div.past12Months:.4f} per share")
+                if last_price:
+                    trailing_yield = div.past12Months / last_price * 100
+                    lines.append(f"**Trailing Yield**: {trailing_yield:.2f}%")
+
+            if div.next12Months is not None:
+                lines.append(f"**Next 12 Months (est)**: ${div.next12Months:.4f} per share")
+                if last_price:
+                    fwd_yield = div.next12Months / last_price * 100
+                    lines.append(f"**Forward Yield (est)**: {fwd_yield:.2f}%")
+
+            if last_price:
+                lines.extend(["", f"*Based on last price: {fmt_price(last_price, params.currency)}*"])
+
+            return "\n".join(lines)
+        finally:
             ib.cancelMktData(qualified)
-            return f"No dividend data available for {params.symbol}."
-
-        div = ticker.dividends
-        last_price = ticker.last if ticker.last and not math.isnan(ticker.last) else None
-        if not last_price and ticker.close and not math.isnan(ticker.close):
-            last_price = ticker.close
-
-        lines = [
-            f"# {params.symbol} Dividends",
-            "",
-        ]
-
-        if div.nextDate:
-            lines.append(f"**Next Ex-Date**: {div.nextDate}")
-        if div.nextAmount:
-            lines.append(f"**Next Amount**: ${div.nextAmount:.4f} per share")
-
-        if div.past12Months is not None:
-            lines.append(f"**Past 12 Months**: ${div.past12Months:.4f} per share")
-            if last_price:
-                trailing_yield = div.past12Months / last_price * 100
-                lines.append(f"**Trailing Yield**: {trailing_yield:.2f}%")
-
-        if div.next12Months is not None:
-            lines.append(f"**Next 12 Months (est)**: ${div.next12Months:.4f} per share")
-            if last_price:
-                fwd_yield = div.next12Months / last_price * 100
-                lines.append(f"**Forward Yield (est)**: {fwd_yield:.2f}%")
-
-        if last_price:
-            lines.extend(["", f"*Based on last price: {fmt_price(last_price, params.currency)}*"])
-
-        # Clean up subscription
-        ib.cancelMktData(qualified)
-
-        return "\n".join(lines)
 
     except Exception as e:
         return handle_ib_error(e, f"fetching dividend data for {params.symbol}")
@@ -483,8 +483,7 @@ async def ibkr_search_contracts(params: SearchInput, ctx: Context) -> str:
             if not c:
                 continue
 
-            # Get long name from contract details if available
-            name = getattr(c, 'description', '') or c.symbol
+            name = c.symbol
             derivs = ", ".join(desc.derivativeSecTypes) if desc.derivativeSecTypes else "—"
 
             lines.append(

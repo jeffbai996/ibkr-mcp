@@ -13,9 +13,13 @@ from tools.market_data import (
     ibkr_get_quote,
     ibkr_get_historical_bars,
     ibkr_get_contract_details,
+    ibkr_get_dividends,
+    ibkr_search_contracts,
     QuoteInput,
     HistoricalInput,
     ContractInput,
+    DividendInput,
+    SearchInput,
 )
 from tests.conftest import make_ctx, make_mock_ib, make_bar
 
@@ -232,3 +236,155 @@ class TestGetContractDetails:
         )
 
         assert "No contract details found" in result
+
+
+# --- Dividends ---
+
+def _make_dividends(past12=4.80, next12=5.00, next_date="2026-03-15",
+                    next_amount=1.25):
+    """Build a mock Dividends object."""
+    d = MagicMock()
+    d.past12Months = past12
+    d.next12Months = next12
+    d.nextDate = next_date
+    d.nextAmount = next_amount
+    return d
+
+
+class TestGetDividends:
+    @pytest.mark.anyio
+    async def test_basic_dividends(self):
+        ib = make_mock_ib()
+        ticker = MagicMock(spec=Ticker)
+        ticker.last = 150.0
+        ticker.close = 148.0
+        ticker.dividends = _make_dividends()
+        ib.ticker.return_value = ticker
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_get_dividends(DividendInput(symbol="AAPL"), ctx)
+
+        assert "AAPL Dividends" in result
+        assert "2026-03-15" in result
+        assert "$1.2500" in result  # next amount
+        assert "$4.8000" in result  # past 12 months
+        assert "Trailing Yield" in result
+        # Cleanup should be called
+        assert ib.cancelMktData.called
+
+    @pytest.mark.anyio
+    async def test_no_dividend_data(self):
+        ib = make_mock_ib()
+        ticker = MagicMock(spec=Ticker)
+        ticker.last = 150.0
+        ticker.dividends = None
+        ib.ticker.return_value = ticker
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_get_dividends(DividendInput(symbol="AAPL"), ctx)
+
+        assert "No dividend data" in result
+        assert ib.cancelMktData.called
+
+    @pytest.mark.anyio
+    async def test_yield_calculation(self):
+        ib = make_mock_ib()
+        ticker = MagicMock(spec=Ticker)
+        ticker.last = 100.0
+        ticker.close = 99.0
+        ticker.dividends = _make_dividends(past12=4.00, next12=4.50)
+        ib.ticker.return_value = ticker
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_get_dividends(DividendInput(symbol="T"), ctx)
+
+        # trailing yield = 4.0 / 100 * 100 = 4.00%
+        assert "4.00%" in result
+        # forward yield = 4.5 / 100 * 100 = 4.50%
+        assert "4.50%" in result
+
+    @pytest.mark.anyio
+    async def test_contract_not_found(self):
+        ib = make_mock_ib()
+        ib.qualifyContractsAsync = AsyncMock(return_value=[])
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_get_dividends(DividendInput(symbol="ZZZZ"), ctx)
+
+        assert "Could not find contract" in result
+
+    @pytest.mark.anyio
+    async def test_nan_price_uses_close(self):
+        """When last is NaN, should fall back to close for yield calc."""
+        ib = make_mock_ib()
+        ticker = MagicMock(spec=Ticker)
+        ticker.last = float("nan")
+        ticker.close = 200.0
+        ticker.dividends = _make_dividends(past12=6.0)
+        ib.ticker.return_value = ticker
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_get_dividends(DividendInput(symbol="MSFT"), ctx)
+
+        # trailing yield = 6.0 / 200 * 100 = 3.00%
+        assert "3.00%" in result
+
+
+# --- Search Contracts ---
+
+def _make_contract_desc(symbol="AAPL", sec_type="STK", exchange="NASDAQ",
+                        currency="USD", derivs=None):
+    """Build a mock ContractDescription object."""
+    desc = MagicMock()
+    c = MagicMock()
+    c.symbol = symbol
+    c.secType = sec_type
+    c.primaryExchange = exchange
+    c.exchange = "SMART"
+    c.currency = currency
+    desc.contract = c
+    desc.derivativeSecTypes = derivs or []
+    return desc
+
+
+class TestSearchContracts:
+    @pytest.mark.anyio
+    async def test_basic_search(self):
+        ib = make_mock_ib()
+        ib.reqMatchingSymbolsAsync = AsyncMock(return_value=[
+            _make_contract_desc("AAPL", derivs=["OPT", "WAR"]),
+            _make_contract_desc("NVDS", sec_type="STK", exchange="ARCA"),
+        ])
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_search_contracts(SearchInput(query="NVD"), ctx)
+
+        assert "AAPL" in result
+        assert "NVDS" in result
+        assert "OPT" in result
+        assert "Results**: 2" in result
+
+    @pytest.mark.anyio
+    async def test_no_results(self):
+        ib = make_mock_ib()
+        ib.reqMatchingSymbolsAsync = AsyncMock(return_value=None)
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_search_contracts(
+            SearchInput(query="XYZNOTREAL"), ctx
+        )
+
+        assert "No contracts found" in result
+
+    @pytest.mark.anyio
+    async def test_no_derivatives_shows_dash(self):
+        ib = make_mock_ib()
+        ib.reqMatchingSymbolsAsync = AsyncMock(return_value=[
+            _make_contract_desc("SPY", derivs=[]),
+        ])
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_search_contracts(SearchInput(query="SPY"), ctx)
+
+        # Empty derivativeSecTypes should show em-dash
+        assert "—" in result

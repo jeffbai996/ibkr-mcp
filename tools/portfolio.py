@@ -110,8 +110,11 @@ async def ibkr_get_positions(params: PortfolioInput, ctx: Context) -> str:
                 f"{mkt_value} | {unreal} | {fmt_pct(weight)} |"
             )
 
-        # Totals
-        total_unreal = sum(Decimal(str(p.unrealizedPNL)) for p in items)
+        # Totals — skip NaN values to prevent one bad position from poisoning the sum
+        total_unreal = sum(
+            Decimal(str(p.unrealizedPNL)) for p in items
+            if not math.isnan(p.unrealizedPNL)
+        )
         lines.append("")
         lines.append(f"**Total Market Value**: {fmt_price(total_value)}")
         lines.append(f"**Total Unrealized P&L**: {fmt_pnl(total_unreal)}")
@@ -165,7 +168,10 @@ async def ibkr_get_portfolio_snapshot(params: PortfolioInput, ctx: Context) -> s
         items = list(ib.portfolio(account))
         items.sort(key=lambda p: abs(p.marketValue), reverse=True)
 
-        total_unreal = sum(Decimal(str(p.unrealizedPNL)) for p in items)
+        total_unreal = sum(
+            Decimal(str(p.unrealizedPNL)) for p in items
+            if not math.isnan(p.unrealizedPNL)
+        )
         total_mkt = sum(abs(Decimal(str(p.marketValue))) for p in items)
 
         margin_util = init_margin / nlv * 100 if nlv and nlv != 0 else None
@@ -320,36 +326,38 @@ async def ibkr_get_pnl_by_position(params: PortfolioInput, ctx: Context) -> str:
                 msg += f" matching '{params.symbol_filter}'"
             return msg
 
-        # Subscribe to P&L for each position
+        # Subscribe to P&L for each position.
+        # try/finally ensures subscriptions are always cancelled,
+        # even if processing throws an exception (resource leak prevention).
         pnl_singles = []
-        for p in items:
-            pnl = ib.reqPnLSingle(account, "", p.contract.conId)
-            pnl_singles.append((p, pnl))
+        try:
+            for p in items:
+                pnl = ib.reqPnLSingle(account, "", p.contract.conId)
+                pnl_singles.append((p, pnl))
 
-        # Wait for IB to populate the data
-        await asyncio.sleep(1.5)
+            # Wait for IB to populate the data
+            await asyncio.sleep(1.5)
 
-        # Build results
-        rows = []
-        for p, pnl in pnl_singles:
-            daily = pnl.dailyPnL if not math.isnan(pnl.dailyPnL) else None
-            unreal = pnl.unrealizedPnL if not math.isnan(pnl.unrealizedPnL) else None
-            real = pnl.realizedPnL if not math.isnan(pnl.realizedPnL) else None
-            value = pnl.value if not math.isnan(pnl.value) else None
+            # Build results
+            rows = []
+            for p, pnl in pnl_singles:
+                daily = pnl.dailyPnL if not math.isnan(pnl.dailyPnL) else None
+                unreal = pnl.unrealizedPnL if not math.isnan(pnl.unrealizedPnL) else None
+                real = pnl.realizedPnL if not math.isnan(pnl.realizedPnL) else None
+                value = pnl.value if not math.isnan(pnl.value) else None
 
-            rows.append({
-                "symbol": p.contract.symbol,
-                "currency": p.contract.currency,
-                "shares": p.position,
-                "daily": daily,
-                "unrealized": unreal,
-                "realized": real,
-                "value": value,
-            })
-
-        # Cancel all subscriptions
-        for p, pnl in pnl_singles:
-            ib.cancelPnLSingle(account, "", p.contract.conId)
+                rows.append({
+                    "symbol": p.contract.symbol,
+                    "currency": p.contract.currency,
+                    "shares": p.position,
+                    "daily": daily,
+                    "unrealized": unreal,
+                    "realized": real,
+                    "value": value,
+                })
+        finally:
+            for p, pnl in pnl_singles:
+                ib.cancelPnLSingle(account, "", p.contract.conId)
 
         # Sort by daily P&L descending (best performers first, None last)
         rows.sort(key=lambda r: r["daily"] if r["daily"] is not None else float("-inf"), reverse=True)
