@@ -34,6 +34,7 @@ import tools.portfolio    # noqa: F401, E402
 import tools.market_data  # noqa: F401, E402
 import tools.analytics    # noqa: F401, E402
 import tools.orders       # noqa: F401, E402
+import tools.live_data    # noqa: F401, E402
 
 
 if __name__ == "__main__":
