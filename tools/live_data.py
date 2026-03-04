@@ -99,6 +99,54 @@ async def _qualify_stock(ib, symbol: str, exchange: str = "SMART",
     return contracts[0] if contracts else None
 
 
+async def _get_last_price(ib, contract) -> tuple:
+    """Get last price for a contract, falling back to historical bars after hours.
+
+    Returns (last, close, high, low, volume) tuple. Any value may be None.
+    """
+    # Try snapshot first
+    ib.reqMktData(contract, "", True, False)
+    await asyncio.sleep(2)
+    ticker = ib.ticker(contract)
+
+    last = _val(ticker.last) if ticker else None
+    close = _val(ticker.close) if ticker else None
+    bid = _val(ticker.bid) if ticker else None
+    ask = _val(ticker.ask) if ticker else None
+    high = _val(ticker.high) if ticker else None
+    low = _val(ticker.low) if ticker else None
+    volume = _val(ticker.volume) if ticker else None
+
+    has_data = last is not None or bid is not None
+
+    if has_data:
+        return {
+            "last": last or close, "close": close,
+            "bid": bid, "ask": ask,
+            "high": high, "low": low, "volume": volume,
+        }
+
+    # Snapshot empty — fall back to historical bars (extended hours)
+    bars = await ib.reqHistoricalDataAsync(
+        contract, endDateTime="", durationStr="2 D",
+        barSizeSetting="1 day", whatToShow="TRADES", useRTH=False,
+    )
+
+    if not bars:
+        return {"last": None, "close": None, "bid": None, "ask": None,
+                "high": None, "low": None, "volume": None}
+
+    last_bar = bars[-1]
+    prev_close = bars[-2].close if len(bars) >= 2 else None
+
+    return {
+        "last": last_bar.close, "close": prev_close,
+        "bid": None, "ask": None,
+        "high": last_bar.high, "low": last_bar.low,
+        "volume": last_bar.volume if last_bar.volume > 0 else None,
+    }
+
+
 # --- Tools ---
 
 @mcp.tool(
@@ -365,11 +413,13 @@ async def ibkr_compare_symbols(params: CompareInput, ctx: Context) -> str:
 
         failed = [s for s in raw_symbols if s not in qual_map]
 
-        # Request snapshots for all qualified contracts
-        for c in qual_map.values():
-            ib.reqMktData(c, "", True, False)
-
-        await asyncio.sleep(2.5)
+        # Fetch prices in parallel — handles after-hours fallback automatically
+        price_tasks = {
+            sym: _get_last_price(ib, c) for sym, c in qual_map.items()
+        }
+        price_results = {}
+        for sym, task in price_tasks.items():
+            price_results[sym] = await task
 
         lines = [
             f"# Symbol Comparison",
@@ -383,20 +433,12 @@ async def ibkr_compare_symbols(params: CompareInput, ctx: Context) -> str:
                 lines.append(f"| {sym} | *not found* | | | | | |")
                 continue
 
-            ticker = ib.ticker(qual_map[sym])
-            if not ticker:
-                lines.append(f"| {sym} | *no data* | | | | | |")
-                continue
-
-            last = _val(ticker.last)
-            close = _val(ticker.close)
-            bid = _val(ticker.bid)
-            ask = _val(ticker.ask)
-            volume = _val(ticker.volume)
-
-            # Use close as fallback for last (outside RTH)
-            if last is None:
-                last = close
+            d = price_results.get(sym, {})
+            last = d.get("last")
+            close = d.get("close")
+            bid = d.get("bid")
+            ask = d.get("ask")
+            volume = d.get("volume")
 
             change = None
             change_pct = None
@@ -454,13 +496,9 @@ async def ibkr_get_option_chain(params: OptionChainInput, ctx: Context) -> str:
         if not underlying:
             return f"Could not find underlying contract for {params.symbol}."
 
-        # Get underlying price for ATM reference
-        ib.reqMktData(underlying, "", True, False)
-        await asyncio.sleep(1.5)
-        und_ticker = ib.ticker(underlying)
-        und_price = _val(und_ticker.last) if und_ticker else None
-        if und_price is None and und_ticker:
-            und_price = _val(und_ticker.close)
+        # Get underlying price for ATM reference (works after hours too)
+        price_data = await _get_last_price(ib, underlying)
+        und_price = price_data.get("last")
         if und_price is None:
             return f"Cannot determine {params.symbol} price for ATM reference."
 
