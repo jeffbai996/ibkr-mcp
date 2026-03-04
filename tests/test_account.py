@@ -1,18 +1,23 @@
-"""Integration tests for tools/account.py — account summary, margin, P&L."""
+"""Integration tests for tools/account.py — account summary, margin, P&L, briefing."""
+
+import math
 
 import pytest
-from ib_insync.objects import PnL
-from unittest.mock import MagicMock
+from ib_insync.objects import PnL, PnLSingle
+from unittest.mock import AsyncMock, MagicMock
 
 from tools.account import (
     ibkr_get_account_summary,
     ibkr_get_margin_summary,
     ibkr_list_accounts,
     ibkr_get_account_pnl,
+    ibkr_morning_briefing,
     AccountInput,
+    BriefingInput,
 )
 from tests.conftest import (
-    make_ctx, make_mock_ib, make_summary, make_account_value, TEST_ACCOUNT,
+    make_ctx, make_mock_ib, make_summary, make_account_value,
+    make_positions, TEST_ACCOUNT,
 )
 
 
@@ -187,3 +192,155 @@ class TestAccountPnl:
 
         assert "$-15,000.00 USD" in result
         assert "$-50,000.00 USD" in result
+
+    @pytest.mark.anyio
+    async def test_pnl_cleanup_on_error(self):
+        """cancelPnL must run even when formatting throws (all-NaN data)."""
+        ib = make_mock_ib()
+        pnl = PnL(
+            account=TEST_ACCOUNT, modelCode="",
+            dailyPnL=float("nan"), unrealizedPnL=float("nan"),
+            realizedPnL=float("nan"),
+        )
+        ib.reqPnL.return_value = pnl
+        ctx = make_ctx(ib=ib)
+
+        # Should not raise — fmt_pnl handles NaN → "N/A"
+        result = await ibkr_get_account_pnl(AccountInput(), ctx)
+
+        # Subscription must be cancelled regardless of data quality
+        ib.cancelPnL.assert_called_once()
+        assert "N/A" in result
+
+
+# --- Morning Briefing ---
+
+def _make_briefing_ib(
+    positions=None,
+    daily_pnl: float = 5000.0,
+    with_orders: bool = False,
+):
+    """Build a mock IB with everything the briefing tool needs."""
+    ib = make_mock_ib(positions=positions)
+    pnl = PnL(
+        account=TEST_ACCOUNT, modelCode="",
+        dailyPnL=daily_pnl, unrealizedPnL=200000.0, realizedPnL=150.0,
+    )
+    ib.reqPnL.return_value = pnl
+
+    # Per-position P&L: match conftest's 5-position portfolio
+    pos = positions or make_positions()
+    daily_values = [3000.0, 1500.0, 500.0, -200.0, -50.0]
+    pnl_singles = []
+    for i, p in enumerate(pos):
+        daily = daily_values[i] if i < len(daily_values) else 0.0
+        ps = PnLSingle(
+            account=TEST_ACCOUNT, modelCode="", conId=p.contract.conId,
+            dailyPnL=daily, unrealizedPnL=p.unrealizedPNL,
+            realizedPnL=0.0, position=p.position, value=p.marketValue,
+        )
+        pnl_singles.append(ps)
+    ib.reqPnLSingle.side_effect = pnl_singles
+
+    # Open orders
+    if with_orders:
+        mock_trade = MagicMock()
+        mock_trade.order.account = TEST_ACCOUNT
+        mock_trade.order.action = "BUY"
+        mock_trade.order.totalQuantity = 100
+        mock_trade.order.orderType = "LMT"
+        mock_trade.contract.symbol = "AAPL"
+        ib.openTrades.return_value = [mock_trade]
+    else:
+        ib.openTrades.return_value = []
+
+    # FX — default: no multi-currency, so qualifyContractsAsync won't be called
+    ib.qualifyContractsAsync = AsyncMock(return_value=[])
+
+    return ib
+
+
+class TestMorningBriefing:
+    @pytest.mark.anyio
+    async def test_basic_output(self):
+        ib = _make_briefing_ib()
+        ctx = make_ctx(ib=ib)
+        result = await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        assert "# Morning Briefing" in result
+        assert "Account Health" in result
+        assert "$10,000,000.00 USD" in result  # NLV
+        assert "1.80x" in result  # leverage
+        assert "Daily P&L" in result
+        assert "+$5,000.00 USD" in result  # daily
+
+    @pytest.mark.anyio
+    async def test_top_movers(self):
+        ib = _make_briefing_ib()
+        ctx = make_ctx(ib=ib)
+        result = await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        assert "Top Gainers" in result
+        assert "AAPL" in result  # highest daily = 3000
+        assert "MSFT" in result  # second = 1500
+
+    @pytest.mark.anyio
+    async def test_open_orders_shown(self):
+        ib = _make_briefing_ib(with_orders=True)
+        ctx = make_ctx(ib=ib)
+        result = await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        assert "1 open order" in result
+        assert "AAPL" in result
+        assert "BUY" in result
+
+    @pytest.mark.anyio
+    async def test_no_orders(self):
+        ib = _make_briefing_ib()
+        ctx = make_ctx(ib=ib)
+        result = await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        assert "No open orders." in result
+
+    @pytest.mark.anyio
+    async def test_subscriptions_cleaned_up(self):
+        """All P&L subscriptions must be cancelled in finally."""
+        ib = _make_briefing_ib()
+        ctx = make_ctx(ib=ib)
+        await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        ib.cancelPnL.assert_called_once()
+        assert ib.cancelPnLSingle.call_count == 5  # one per position
+
+    @pytest.mark.anyio
+    async def test_empty_portfolio(self):
+        ib = _make_briefing_ib(positions=[])
+        ib.reqPnLSingle.side_effect = []
+        ctx = make_ctx(ib=ib)
+        result = await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        assert "Morning Briefing" in result
+        assert "No open orders." in result
+
+    @pytest.mark.anyio
+    async def test_nan_pnl_handled(self):
+        """NaN daily P&L for a position shouldn't crash the briefing."""
+        ib = _make_briefing_ib()
+        pos = make_positions()
+        # Override: first position has NaN daily
+        pnl_singles = []
+        for i, p in enumerate(pos):
+            daily = float("nan") if i == 0 else 1000.0
+            ps = PnLSingle(
+                account=TEST_ACCOUNT, modelCode="", conId=p.contract.conId,
+                dailyPnL=daily, unrealizedPnL=0.0,
+                realizedPnL=0.0, position=p.position, value=p.marketValue,
+            )
+            pnl_singles.append(ps)
+        ib.reqPnLSingle.side_effect = pnl_singles
+        ctx = make_ctx(ib=ib)
+
+        result = await ibkr_morning_briefing(BriefingInput(), ctx)
+
+        # Should not crash, AAPL (NaN daily) excluded from movers
+        assert "Morning Briefing" in result
