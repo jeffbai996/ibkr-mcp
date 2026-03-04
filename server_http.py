@@ -49,8 +49,9 @@ if __name__ == "__main__":
     print("To expose via Tailscale Funnel:")
     print(f"  tailscale funnel {MCP_HTTP_PORT}")
 
-    mcp.run(
-        transport="streamable-http",
-        host=MCP_HTTP_HOST,
-        port=MCP_HTTP_PORT,
-    )
+    # Override host/port on the shared FastMCP instance — these are set
+    # on the constructor normally, but we share app.py with the stdio server
+    mcp.settings.host = MCP_HTTP_HOST
+    mcp.settings.port = MCP_HTTP_PORT
+
+    mcp.run(transport="streamable-http")
