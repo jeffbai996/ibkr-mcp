@@ -5,6 +5,7 @@ Quotes, historical bars, and contract details. The data layer.
 """
 
 import asyncio
+import math
 from decimal import Decimal
 from typing import Optional
 
@@ -44,6 +45,20 @@ class ContractInput(BaseModel):
     sec_type: str = Field(default="STK", description="Security type")
     exchange: str = Field(default="SMART", description="Exchange")
     currency: str = Field(default="USD", description="Currency")
+
+
+class DividendInput(BaseModel):
+    symbol: str = Field(..., description="Stock symbol (e.g., 'AAPL', 'MSFT')")
+    exchange: str = Field(default="SMART", description="Exchange")
+    currency: str = Field(default="USD", description="Currency")
+
+
+class SearchInput(BaseModel):
+    query: str = Field(
+        ...,
+        description="Search term: ticker, partial name, or company name "
+                    "(e.g., 'AAPL', 'Taiwan Semi', 'ARM')"
+    )
 
 
 # --- Tools ---
@@ -341,3 +356,145 @@ async def ibkr_get_contract_details(params: ContractInput, ctx: Context) -> str:
 
     except Exception as e:
         return handle_ib_error(e, f"fetching contract details for {params.symbol}")
+
+
+@mcp.tool(
+    name="ibkr_get_dividends",
+    annotations={
+        "title": "Get Dividend Info",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def ibkr_get_dividends(params: DividendInput, ctx: Context) -> str:
+    """Get dividend information for a stock: next date, amount, and trailing yield.
+
+    Uses IB's generic tick 456 to fetch dividend data including past 12 months,
+    next 12 months projected, next ex-date, and next amount per share.
+
+    Args:
+        params (DividendInput): Symbol to look up.
+
+    Returns:
+        str: Markdown with dividend details and yield estimates.
+    """
+    try:
+        ib = get_ib(ctx)
+
+        contract = Stock(params.symbol, params.exchange, params.currency)
+        contracts = await ib.qualifyContractsAsync(contract)
+        if not contracts:
+            return f"Could not find contract for {params.symbol}."
+
+        qualified = contracts[0]
+
+        # Generic tick 456 = dividend data
+        ib.reqMktData(qualified, "456", False, False)
+        await asyncio.sleep(2)
+
+        ticker = ib.ticker(qualified)
+
+        if not ticker or not ticker.dividends:
+            # Cancel subscription and bail
+            ib.cancelMktData(qualified)
+            return f"No dividend data available for {params.symbol}."
+
+        div = ticker.dividends
+        last_price = ticker.last if ticker.last and not math.isnan(ticker.last) else None
+        if not last_price and ticker.close and not math.isnan(ticker.close):
+            last_price = ticker.close
+
+        lines = [
+            f"# {params.symbol} Dividends",
+            "",
+        ]
+
+        if div.nextDate:
+            lines.append(f"**Next Ex-Date**: {div.nextDate}")
+        if div.nextAmount:
+            lines.append(f"**Next Amount**: ${div.nextAmount:.4f} per share")
+
+        if div.past12Months is not None:
+            lines.append(f"**Past 12 Months**: ${div.past12Months:.4f} per share")
+            if last_price:
+                trailing_yield = div.past12Months / last_price * 100
+                lines.append(f"**Trailing Yield**: {trailing_yield:.2f}%")
+
+        if div.next12Months is not None:
+            lines.append(f"**Next 12 Months (est)**: ${div.next12Months:.4f} per share")
+            if last_price:
+                fwd_yield = div.next12Months / last_price * 100
+                lines.append(f"**Forward Yield (est)**: {fwd_yield:.2f}%")
+
+        if last_price:
+            lines.extend(["", f"*Based on last price: {fmt_price(last_price, params.currency)}*"])
+
+        # Clean up subscription
+        ib.cancelMktData(qualified)
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return handle_ib_error(e, f"fetching dividend data for {params.symbol}")
+
+
+@mcp.tool(
+    name="ibkr_search_contracts",
+    annotations={
+        "title": "Search Contracts",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def ibkr_search_contracts(params: SearchInput, ctx: Context) -> str:
+    """Search for contracts by symbol or company name.
+
+    Finds matching contracts on IBKR — useful for discovering tickers,
+    verifying symbols, or finding the right contract for an ETF/ADR.
+
+    Args:
+        params (SearchInput): Search query (ticker or company name).
+
+    Returns:
+        str: Markdown table of matching contracts with symbol, name, type,
+             exchange, and available derivatives.
+    """
+    try:
+        ib = get_ib(ctx)
+
+        results = await ib.reqMatchingSymbolsAsync(params.query)
+
+        if not results:
+            return f"No contracts found matching '{params.query}'."
+
+        lines = [
+            f"# Search Results: '{params.query}'",
+            "",
+            "| Symbol | Name | Type | Exchange | Currency | Derivatives |",
+            "|--------|------|------|----------|----------|-------------|",
+        ]
+
+        for desc in results:
+            c = desc.contract
+            if not c:
+                continue
+
+            # Get long name from contract details if available
+            name = getattr(c, 'description', '') or c.symbol
+            derivs = ", ".join(desc.derivativeSecTypes) if desc.derivativeSecTypes else "—"
+
+            lines.append(
+                f"| {c.symbol} | {name} | {c.secType} | "
+                f"{c.primaryExchange or c.exchange} | {c.currency} | {derivs} |"
+            )
+
+        lines.append(f"\n**Results**: {len(results)}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return handle_ib_error(e, f"searching contracts for '{params.query}'")

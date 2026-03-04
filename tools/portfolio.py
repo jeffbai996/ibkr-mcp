@@ -4,6 +4,8 @@ Portfolio tools for ibkr_mcp.
 Position-level data: what you own, what it's worth, how it's performing.
 """
 
+import asyncio
+import math
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -277,6 +279,109 @@ async def ibkr_get_portfolio_by_currency(params: PortfolioInput, ctx: Context) -
 
     except Exception as e:
         return handle_ib_error(e, "grouping portfolio by currency")
+
+
+@mcp.tool(
+    name="ibkr_get_pnl_by_position",
+    annotations={
+        "title": "Get P&L by Position",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def ibkr_get_pnl_by_position(params: PortfolioInput, ctx: Context) -> str:
+    """Get daily P&L broken down by position — what's driving today's returns.
+
+    Subscribes to per-position P&L from IB, showing daily, unrealized, and
+    realized P&L for each holding. Sorted by daily P&L so your biggest
+    movers are at the top.
+
+    Args:
+        params (PortfolioInput): Optional account and symbol filter.
+
+    Returns:
+        str: Markdown table of per-position P&L sorted by daily P&L.
+    """
+    try:
+        ib = get_ib(ctx)
+        account = resolve_account(ctx, params.account)
+
+        # Get positions to know which conIds to subscribe to
+        items = list(ib.portfolio(account))
+        if params.symbol_filter:
+            filt = params.symbol_filter.upper()
+            items = [p for p in items if filt in p.contract.symbol.upper()]
+
+        if not items:
+            msg = f"No positions for {account}"
+            if params.symbol_filter:
+                msg += f" matching '{params.symbol_filter}'"
+            return msg
+
+        # Subscribe to P&L for each position
+        pnl_singles = []
+        for p in items:
+            pnl = ib.reqPnLSingle(account, "", p.contract.conId)
+            pnl_singles.append((p, pnl))
+
+        # Wait for IB to populate the data
+        await asyncio.sleep(1.5)
+
+        # Build results
+        rows = []
+        for p, pnl in pnl_singles:
+            daily = pnl.dailyPnL if not math.isnan(pnl.dailyPnL) else None
+            unreal = pnl.unrealizedPnL if not math.isnan(pnl.unrealizedPnL) else None
+            real = pnl.realizedPnL if not math.isnan(pnl.realizedPnL) else None
+            value = pnl.value if not math.isnan(pnl.value) else None
+
+            rows.append({
+                "symbol": p.contract.symbol,
+                "currency": p.contract.currency,
+                "shares": p.position,
+                "daily": daily,
+                "unrealized": unreal,
+                "realized": real,
+                "value": value,
+            })
+
+        # Cancel all subscriptions
+        for p, pnl in pnl_singles:
+            ib.cancelPnLSingle(account, "", p.contract.conId)
+
+        # Sort by daily P&L descending (best performers first, None last)
+        rows.sort(key=lambda r: r["daily"] if r["daily"] is not None else float("-inf"), reverse=True)
+
+        total_daily = sum(Decimal(str(r["daily"])) for r in rows if r["daily"] is not None)
+
+        lines = [
+            f"# P&L by Position: {account}",
+            "",
+            "| Symbol | Shares | Daily P&L | Unrealized | Realized | Value |",
+            "|--------|--------|-----------|------------|----------|-------|",
+        ]
+
+        for r in rows:
+            lines.append(
+                f"| {r['symbol']} | {fmt_shares(r['shares'])} | "
+                f"{fmt_pnl(r['daily'], r['currency'])} | "
+                f"{fmt_pnl(r['unrealized'], r['currency'])} | "
+                f"{fmt_pnl(r['realized'], r['currency'])} | "
+                f"{fmt_price(r['value'], r['currency']) if r['value'] else 'N/A'} |"
+            )
+
+        lines.extend([
+            "",
+            f"**Total Daily P&L**: {fmt_pnl(total_daily)}",
+            f"**Positions**: {len(rows)}",
+        ])
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return handle_ib_error(e, "fetching per-position P&L")
 
 
 # --- Helpers ---
