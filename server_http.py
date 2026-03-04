@@ -29,6 +29,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+from mcp.server.fastmcp.server import TransportSecuritySettings
 from app import mcp  # noqa: E402
 
 # Register tool modules (same as server.py)
@@ -53,5 +54,11 @@ if __name__ == "__main__":
     # on the constructor normally, but we share app.py with the stdio server
     mcp.settings.host = MCP_HTTP_HOST
     mcp.settings.port = MCP_HTTP_PORT
+
+    # Disable DNS rebinding protection — requests come through Tailscale
+    # Funnel with Host: literal:your-machine.your-tailnet.ts.net, not localhost
+    mcp._transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    )
 
     mcp.run(transport="streamable-http")
