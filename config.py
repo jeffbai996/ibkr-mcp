@@ -17,3 +17,10 @@ IB_READONLY: bool = os.environ.get("IB_READONLY", "false").lower() == "true"
 
 # Account settings
 PRIMARY_ACCOUNT: str = os.environ.get("PRIMARY_ACCOUNT", "")
+
+# Secondary gateway (dual-account support)
+# Set IB_PORT_2 to connect to a second IB Gateway instance.
+# If 0 or empty, single-gateway mode — everything works as before.
+IB_PORT_2: int = int(os.environ.get("IB_PORT_2", "0") or "0")
+IB_CLIENT_ID_2: int = int(os.environ.get("IB_CLIENT_ID_2", "20"))
+SECONDARY_ACCOUNT: str = os.environ.get("SECONDARY_ACCOUNT", "")
