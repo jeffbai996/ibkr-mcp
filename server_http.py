@@ -51,6 +51,7 @@ from config import (
     IB_HOST, IB_PORT, IB_CLIENT_ID, IB_TIMEOUT, IB_READONLY,
     PRIMARY_ACCOUNT, IB_PORT_2, IB_CLIENT_ID_2, SECONDARY_ACCOUNT,
 )
+from core.connection import ConnectionHealth
 
 logger = logging.getLogger("ibkr_mcp.http")
 
@@ -60,14 +61,24 @@ _ib2: IB | None = None
 _primary_account: str = ""
 _secondary_account: str = ""
 _account_map: dict[str, IB] = {}
+_health: ConnectionHealth = ConnectionHealth()
+_health2: ConnectionHealth = ConnectionHealth()
+_health_map: dict[str, ConnectionHealth] = {}
 _ib_lock = asyncio.Lock()
 
 
 async def _connect_ib() -> tuple[IB, str]:
-    """Connect to primary IB Gateway once. Called lazily on first session."""
+    """Connect to primary IB Gateway. Disconnects stale connection first."""
+    global _ib, _health
+
+    # Clean up stale connection before creating new one
+    if _ib is not None:
+        try:
+            _ib.disconnect()
+        except Exception:
+            pass
+
     ib = IB()
-    # PID-based offset in 5000-9999 range to avoid collisions
-    # with stdio server's PID-based IDs (which use 0-8999 range)
     client_id = IB_CLIENT_ID + 5000 + (os.getpid() % 5000)
 
     logger.info(f"Connecting to IB Gateway at {IB_HOST}:{IB_PORT} "
@@ -81,12 +92,15 @@ async def _connect_ib() -> tuple[IB, str]:
         readonly=IB_READONLY,
     )
 
+    # Attach health monitoring
+    _health = ConnectionHealth()
+    _health.attach(ib)
+
     accounts = ib.managedAccounts()
     primary = PRIMARY_ACCOUNT
     if not primary and accounts:
         primary = accounts[0]
 
-    # Mask account IDs in logs — show count + last 4 chars only
     masked = [f"...{a[-4:]}" for a in accounts]
     logger.info(f"Connected. {len(accounts)} account(s): {masked}. "
                 f"Primary: ...{primary[-4:] if primary else 'auto'}")
@@ -95,8 +109,17 @@ async def _connect_ib() -> tuple[IB, str]:
 
 async def _connect_ib2() -> tuple[IB | None, str]:
     """Connect to secondary IB Gateway. Returns (None, "") if not configured or fails."""
+    global _ib2, _health2
+
     if not IB_PORT_2:
         return None, ""
+
+    # Clean up stale connection
+    if _ib2 is not None:
+        try:
+            _ib2.disconnect()
+        except Exception:
+            pass
 
     ib2 = IB()
     client_id_2 = IB_CLIENT_ID_2 + 5000 + (os.getpid() % 5000)
@@ -111,6 +134,11 @@ async def _connect_ib2() -> tuple[IB | None, str]:
             timeout=IB_TIMEOUT,
             readonly=IB_READONLY,
         )
+
+        # Attach health monitoring
+        _health2 = ConnectionHealth()
+        _health2.attach(ib2)
+
         accounts_2 = ib2.managedAccounts()
         secondary = SECONDARY_ACCOUNT or (accounts_2[0] if accounts_2 else "")
         masked_2 = [f"...{a[-4:]}" for a in accounts_2]
@@ -129,26 +157,48 @@ async def http_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     Per-session lifespan that lazily connects to IB Gateway(s).
 
     First session triggers the connection(s). All subsequent sessions
-    reuse the cached connections. If a connection drops, the next
-    session reconnects automatically.
+    reuse the cached connections. If a connection drops (TCP or upstream),
+    the next session reconnects automatically with retry.
     """
-    global _ib, _ib2, _primary_account, _secondary_account, _account_map
+    global _ib, _ib2, _primary_account, _secondary_account, _account_map, _health_map
 
     async with _ib_lock:
-        # Primary connection
-        if _ib is None or not _ib.isConnected():
-            _ib, _primary_account = await _connect_ib()
-            # Rebuild account_map with primary accounts
-            _account_map = {}
-            for acc in _ib.managedAccounts():
-                _account_map[acc] = _ib
+        # Primary connection — check TCP + upstream health
+        needs_reconnect = (
+            _ib is None
+            or not _ib.isConnected()
+            or not _health.connected
+        )
+        if needs_reconnect:
+            for attempt in range(3):
+                try:
+                    _ib, _primary_account = await _connect_ib()
+                    _account_map = {}
+                    _health_map = {}
+                    for acc in _ib.managedAccounts():
+                        _account_map[acc] = _ib
+                        _health_map[acc] = _health
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise ConnectionError(
+                            f"IB Gateway unavailable after 3 attempts: {e}. "
+                            "Gateway may be restarting or down."
+                        ) from e
+                    logger.warning(f"Connect attempt {attempt + 1} failed: {e}. Retrying in 2s...")
+                    await asyncio.sleep(2)
 
         # Secondary connection
-        if IB_PORT_2 and (_ib2 is None or not _ib2.isConnected()):
+        needs_reconnect_2 = (
+            IB_PORT_2
+            and (_ib2 is None or not _ib2.isConnected() or not _health2.connected)
+        )
+        if needs_reconnect_2:
             _ib2, _secondary_account = await _connect_ib2()
             if _ib2:
                 for acc in _ib2.managedAccounts():
                     _account_map[acc] = _ib2
+                    _health_map[acc] = _health2
 
     yield {
         "ib": _ib,
@@ -156,6 +206,8 @@ async def http_lifespan(server: FastMCP) -> AsyncIterator[dict]:
         "primary_account": _primary_account,
         "secondary_account": _secondary_account,
         "account_map": _account_map,
+        "health": _health,
+        "health_map": _health_map,
     }
 
 
