@@ -8,10 +8,10 @@ import pytest
 from tools.portfolio import (
     ibkr_get_positions,
     ibkr_get_portfolio_snapshot,
-    ibkr_get_portfolio_by_currency,
     ibkr_get_pnl_by_position,
     PortfolioInput,
 )
+from tools.intelligence import ibkr_currency, CurrencyInput
 from tests.conftest import (
     make_ctx, make_mock_ib, make_portfolio_item, make_positions,
     make_summary, TEST_ACCOUNT,
@@ -27,9 +27,9 @@ class TestGetPositions:
         result = await ibkr_get_positions(PortfolioInput(), ctx)
 
         assert f"# Positions: {TEST_ACCOUNT}" in result
-        assert "AAPL" in result
         assert "MSFT" in result
-        assert "SPY" in result
+        assert "JPM" in result
+        assert "BND" in result
         # Should have markdown table headers
         assert "| Symbol |" in result
 
@@ -41,8 +41,8 @@ class TestGetPositions:
 
         lines = result.split("\n")
         data_lines = [l for l in lines if l.startswith("| ") and "Symbol" not in l and "---" not in l]
-        # SPY (2.005M) should be first, MSFT (950K) second
-        assert "SPY" in data_lines[0]
+        # JPM (975K) should be first, MSFT (840K) second
+        assert "JPM" in data_lines[0]
         assert "MSFT" in data_lines[1]
 
     @pytest.mark.anyio
@@ -60,10 +60,10 @@ class TestGetPositions:
     async def test_filter_case_insensitive(self):
         ctx = make_ctx()
         result = await ibkr_get_positions(
-            PortfolioInput(symbol_filter="nvda"), ctx
+            PortfolioInput(symbol_filter="msft"), ctx
         )
 
-        assert "AAPL" in result
+        assert "MSFT" in result
 
     @pytest.mark.anyio
     async def test_no_positions(self):
@@ -116,8 +116,8 @@ class TestPortfolioSnapshot:
         result = await ibkr_get_portfolio_snapshot(PortfolioInput(), ctx)
 
         assert "Top Holdings" in result
-        assert "AAPL" in result
         assert "MSFT" in result
+        assert "JPM" in result
 
     @pytest.mark.anyio
     async def test_concentration_metrics(self):
@@ -150,10 +150,10 @@ class TestPortfolioByCurrency:
     async def test_single_currency(self):
         """All USD positions should appear under one group."""
         ctx = make_ctx()
-        result = await ibkr_get_portfolio_by_currency(PortfolioInput(), ctx)
+        result = await ibkr_currency(CurrencyInput(), ctx)
 
         assert "## USD" in result
-        assert "AAPL" in result
+        assert "MSFT" in result
 
     @pytest.mark.anyio
     async def test_multi_currency_grouping(self):
@@ -163,7 +163,7 @@ class TestPortfolioByCurrency:
         ]
         ib = make_mock_ib(positions=positions)
         ctx = make_ctx(ib=ib)
-        result = await ibkr_get_portfolio_by_currency(PortfolioInput(), ctx)
+        result = await ibkr_currency(CurrencyInput(), ctx)
 
         assert "## USD" in result
         assert "## CAD" in result
@@ -178,7 +178,7 @@ class TestPortfolioByCurrency:
         ]
         ib = make_mock_ib(positions=positions)
         ctx = make_ctx(ib=ib)
-        result = await ibkr_get_portfolio_by_currency(PortfolioInput(), ctx)
+        result = await ibkr_currency(CurrencyInput(), ctx)
 
         # Each currency is 50% of portfolio
         assert "+50.00%" in result
@@ -187,9 +187,9 @@ class TestPortfolioByCurrency:
     async def test_empty_portfolio(self):
         ib = make_mock_ib(positions=[])
         ctx = make_ctx(ib=ib)
-        result = await ibkr_get_portfolio_by_currency(PortfolioInput(), ctx)
+        result = await ibkr_currency(CurrencyInput(), ctx)
 
-        assert "No positions found" in result
+        assert "No positions" in result
 
 
 # --- P&L by Position ---

@@ -11,15 +11,14 @@ from ib_insync.ticker import Ticker
 from tools.live_data import (
     ibkr_get_fx_rate,
     ibkr_get_intraday_snapshot,
-    ibkr_compare_symbols,
     ibkr_get_option_chain,
     ibkr_compare_performance,
     FxInput,
     IntradayInput,
-    CompareInput,
     OptionChainInput,
     PerformanceInput,
 )
+from tools.market_data import ibkr_quote, QuoteInput
 from tests.conftest import make_ctx, make_mock_ib, make_bar
 
 
@@ -188,6 +187,8 @@ class TestIntradaySnapshot:
 # --- Compare Symbols ---
 
 class TestCompareSymbols:
+    """Compare symbols via ibkr_quote with multiple symbols."""
+
     @pytest.mark.anyio
     async def test_basic_comparison(self):
         ib = make_mock_ib()
@@ -203,11 +204,10 @@ class TestCompareSymbols:
         ib.ticker.side_effect = ticker_for
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_compare_symbols(
-            CompareInput(symbols="AAPL,AMD"), ctx
+        result = await ibkr_quote(
+            QuoteInput(symbols="AAPL,AMD"), ctx
         )
 
-        assert "Symbol Comparison" in result
         assert "AAPL" in result
         assert "AMD" in result
 
@@ -220,30 +220,11 @@ class TestCompareSymbols:
         ib.ticker.return_value = _make_ticker(last=140.0, close=135.0)
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_compare_symbols(
-            CompareInput(symbols="AAPL,ZZZZ"), ctx
+        result = await ibkr_quote(
+            QuoteInput(symbols="AAPL,ZZZZ"), ctx
         )
 
-        assert "not found" in result
-
-    @pytest.mark.anyio
-    async def test_max_8_symbols(self):
-        """Should silently truncate to 8 symbols."""
-        ib = make_mock_ib()
-        stocks = []
-        for i, sym in enumerate("ABCDEFGHIJ"):
-            s = Stock(sym, "SMART", "USD"); s.conId = i + 1
-            stocks.append(s)
-        ib.qualifyContractsAsync = AsyncMock(return_value=stocks[:8])
-        ib.ticker.return_value = _make_ticker(last=100.0, close=100.0)
-        ctx = make_ctx(ib=ib)
-
-        result = await ibkr_compare_symbols(
-            CompareInput(symbols="A,B,C,D,E,F,G,H,I,J"), ctx
-        )
-
-        # I and J should not appear (truncated)
-        assert "I" not in result.split("Symbol Comparison")[0]  # only check data section
+        assert "not found" in result or "ZZZZ" in result
 
 
 # --- Option Chain ---

@@ -32,7 +32,6 @@ from app import mcp  # noqa: F401 — must import so tool modules can find it
 import tools.account      # noqa: F401, E402
 import tools.portfolio    # noqa: F401, E402
 import tools.market_data  # noqa: F401, E402
-import tools.analytics    # noqa: F401, E402
 import tools.orders       # noqa: F401, E402
 import tools.live_data    # noqa: F401, E402
 import tools.risk         # noqa: F401, E402

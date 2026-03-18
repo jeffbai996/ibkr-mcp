@@ -9,7 +9,7 @@ from ib_insync import Stock
 from ib_insync.objects import Fill, CommissionReport
 from ib_insync.order import Trade, Order, OrderStatus
 
-from tools.orders import ibkr_get_trades, ibkr_get_orders, TradesInput, OrdersInput
+from tools.orders import ibkr_trades, ibkr_get_orders, TradesInput, OrdersInput
 from tests.conftest import make_ctx, make_mock_ib, TEST_ACCOUNT
 
 
@@ -82,7 +82,7 @@ class TestGetTrades:
         ]
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_trades(TradesInput(), ctx)
+        result = await ibkr_trades(TradesInput(), ctx)
 
         assert "Executions" in result
         assert "AAPL" in result
@@ -100,7 +100,7 @@ class TestGetTrades:
         ]
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_trades(TradesInput(), ctx)
+        result = await ibkr_trades(TradesInput(), ctx)
 
         # 1.00 + 2.50 = 3.50
         assert "$3.50" in result
@@ -114,7 +114,7 @@ class TestGetTrades:
         ]
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_trades(TradesInput(symbol_filter="AAPL"), ctx)
+        result = await ibkr_trades(TradesInput(symbol_filter="AAPL"), ctx)
 
         assert "AAPL" in result
         assert "MSFT" not in result
@@ -125,7 +125,7 @@ class TestGetTrades:
         ib.fills.return_value = []
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_trades(TradesInput(), ctx)
+        result = await ibkr_trades(TradesInput(), ctx)
 
         assert "No executions" in result
 
@@ -139,7 +139,7 @@ class TestGetTrades:
         ]
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_trades(TradesInput(), ctx)
+        result = await ibkr_trades(TradesInput(), ctx)
 
         assert "AAPL" in result
         assert "MSFT" not in result
@@ -153,7 +153,7 @@ class TestGetTrades:
         ib.fills.return_value = [fill]
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_trades(TradesInput(), ctx)
+        result = await ibkr_trades(TradesInput(), ctx)
 
         assert "N/A" in result  # NaN commission shown as N/A
 

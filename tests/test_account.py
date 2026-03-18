@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 from tools.account import (
     ibkr_get_account_summary,
-    ibkr_get_margin_summary,
+    ibkr_margin,
     ibkr_list_accounts,
     ibkr_get_account_pnl,
     ibkr_morning_briefing,
     AccountInput,
     BriefingInput,
+    MarginInput,
 )
 from tests.conftest import (
     make_ctx, make_mock_ib, make_summary, make_account_value,
@@ -95,7 +96,7 @@ class TestMarginSummary:
     @pytest.mark.anyio
     async def test_distances(self):
         ctx = make_ctx()
-        result = await ibkr_get_margin_summary(AccountInput(), ctx)
+        result = await ibkr_margin(MarginInput(detail="summary"), ctx)
 
         # equity(10M) - init(6M) = 4M above initial
         assert "$4,000,000.00 USD" in result
@@ -105,7 +106,7 @@ class TestMarginSummary:
     @pytest.mark.anyio
     async def test_max_drawdown_percentages(self):
         ctx = make_ctx()
-        result = await ibkr_get_margin_summary(AccountInput(), ctx)
+        result = await ibkr_margin(MarginInput(detail="summary"), ctx)
 
         # max_dd_call = dist(4M) / nlv(10M) * 100 = 40%
         assert "+40.00%" in result
@@ -114,7 +115,7 @@ class TestMarginSummary:
     async def test_empty_returns_message(self):
         ib = make_mock_ib(summary=[])
         ctx = make_ctx(ib=ib)
-        result = await ibkr_get_margin_summary(AccountInput(), ctx)
+        result = await ibkr_margin(MarginInput(detail="summary"), ctx)
 
         assert "No margin data available" in result
 
@@ -281,8 +282,8 @@ class TestMorningBriefing:
         result = await ibkr_morning_briefing(BriefingInput(), ctx)
 
         assert "Top Gainers" in result
-        assert "AAPL" in result  # highest daily = 3000
-        assert "MSFT" in result  # second = 1500
+        assert "MSFT" in result  # highest daily = 3000
+        assert "JPM" in result  # second = 1500
 
     @pytest.mark.anyio
     async def test_open_orders_shown(self):

@@ -10,10 +10,10 @@ from ib_insync.contract import ContractDetails
 from ib_insync.ticker import Ticker
 
 from tools.market_data import (
-    ibkr_get_quote,
+    ibkr_quote,
     ibkr_get_historical_bars,
     ibkr_get_contract_details,
-    ibkr_get_dividends,
+    ibkr_dividends,
     ibkr_search_contracts,
     QuoteInput,
     HistoricalInput,
@@ -45,7 +45,7 @@ class TestGetQuote:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_quote(QuoteInput(symbol="AAPL"), ctx)
+        result = await ibkr_quote(QuoteInput(symbols="AAPL"), ctx)
 
         assert "# AAPL Quote" in result
         assert "$140.00 USD" in result  # last
@@ -60,7 +60,7 @@ class TestGetQuote:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_quote(QuoteInput(symbol="AAPL"), ctx)
+        result = await ibkr_quote(QuoteInput(symbols="AAPL"), ctx)
 
         # change = 140 - 135 = +5
         assert "+$5.00 USD" in result
@@ -74,7 +74,7 @@ class TestGetQuote:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_quote(QuoteInput(symbol="AAPL"), ctx)
+        result = await ibkr_quote(QuoteInput(symbols="AAPL"), ctx)
 
         # spread = 140.10 - 139.90 = 0.20
         assert "$0.20" in result
@@ -92,7 +92,7 @@ class TestGetQuote:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_quote(QuoteInput(symbol="AAPL"), ctx)
+        result = await ibkr_quote(QuoteInput(symbols="AAPL"), ctx)
 
         # All price fields NaN → has_snapshot=False → falls back to
         # historical bars → mock returns empty → correct "no data" message
@@ -104,7 +104,7 @@ class TestGetQuote:
         ib.qualifyContractsAsync = AsyncMock(return_value=[])
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_quote(QuoteInput(symbol="ZZZZ"), ctx)
+        result = await ibkr_quote(QuoteInput(symbols="ZZZZ"), ctx)
 
         assert "Could not find contract" in result
 
@@ -114,7 +114,7 @@ class TestGetQuote:
         ib.ticker.return_value = None
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_quote(QuoteInput(symbol="AAPL"), ctx)
+        result = await ibkr_quote(QuoteInput(symbols="AAPL"), ctx)
 
         assert "No market data available" in result
 
@@ -263,7 +263,7 @@ class TestGetDividends:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_dividends(DividendInput(symbol="AAPL"), ctx)
+        result = await ibkr_dividends(DividendInput(symbol="AAPL"), ctx)
 
         assert "AAPL Dividends" in result
         assert "2026-03-15" in result
@@ -282,7 +282,7 @@ class TestGetDividends:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_dividends(DividendInput(symbol="AAPL"), ctx)
+        result = await ibkr_dividends(DividendInput(symbol="AAPL"), ctx)
 
         assert "No dividend data" in result
         assert ib.cancelMktData.called
@@ -297,7 +297,7 @@ class TestGetDividends:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_dividends(DividendInput(symbol="T"), ctx)
+        result = await ibkr_dividends(DividendInput(symbol="T"), ctx)
 
         # trailing yield = 4.0 / 100 * 100 = 4.00%
         assert "4.00%" in result
@@ -310,7 +310,7 @@ class TestGetDividends:
         ib.qualifyContractsAsync = AsyncMock(return_value=[])
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_dividends(DividendInput(symbol="ZZZZ"), ctx)
+        result = await ibkr_dividends(DividendInput(symbol="ZZZZ"), ctx)
 
         assert "Could not find contract" in result
 
@@ -325,7 +325,7 @@ class TestGetDividends:
         ib.ticker.return_value = ticker
         ctx = make_ctx(ib=ib)
 
-        result = await ibkr_get_dividends(DividendInput(symbol="MSFT"), ctx)
+        result = await ibkr_dividends(DividendInput(symbol="MSFT"), ctx)
 
         # trailing yield = 6.0 / 200 * 100 = 3.00%
         assert "3.00%" in result
