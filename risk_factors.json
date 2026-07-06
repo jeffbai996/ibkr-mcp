@@ -1,0 +1,50 @@
+[
+  {
+    "id": "hormuz",
+    "name": "Strait of Hormuz",
+    "search_query": "Strait of Hormuz shipping threat Iran navy",
+    "affected_symbols": "AMZN,MSFT,AAPL,TSLA",
+    "impact_channel": "Energy costs → supplier operating costs → margin pressure",
+    "base_severity": 7
+  },
+  {
+    "id": "houthi_red_sea",
+    "name": "Houthi Red Sea Activity",
+    "search_query": "Houthi Red Sea shipping attacks latest",
+    "affected_symbols": "AMZN,MSFT,TSLA",
+    "impact_channel": "Supply chain disruption → equipment delivery delays → project timelines slip",
+    "base_severity": 5
+  },
+  {
+    "id": "energy_infra",
+    "name": "Energy Infrastructure Strikes",
+    "search_query": "Iran Israel energy infrastructure strikes oil refinery",
+    "affected_symbols": "AAPL,TSLA,AMZN,MSFT,GOOGL",
+    "impact_channel": "Oil spike → risk-off rotation → portfolio drawdown → margin pressure",
+    "base_severity": 8
+  },
+  {
+    "id": "truth_social",
+    "name": "Trump Truth Social Escalation",
+    "search_query": "Trump Truth Social tariff Iran threat latest",
+    "affected_symbols": "AAPL,TSLA,MSFT,AMZN,GOOGL",
+    "impact_channel": "Policy uncertainty → VIX spike → margin requirement expansion → forced deleverage",
+    "base_severity": 6
+  },
+  {
+    "id": "china_taiwan",
+    "name": "China-Taiwan Tensions",
+    "search_query": "China Taiwan military exercises semiconductor",
+    "affected_symbols": "AAPL,TSLA,AMZN,MSFT",
+    "impact_channel": "SupplierA supply risk → component bottleneck → covered companies repriced",
+    "base_severity": 9
+  },
+  {
+    "id": "export_controls",
+    "name": "US-China Export Controls",
+    "search_query": "US China semiconductor export controls new restrictions",
+    "affected_symbols": "AAPL,AMZN,TSLA",
+    "impact_channel": "TAM reduction → China revenue cliff → earnings downgrade cycle",
+    "base_severity": 7
+  }
+]

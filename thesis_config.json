@@ -1,0 +1,46 @@
+{
+  "thesis_name": "Example Investment Framework",
+  "time_horizon": "2026-2028",
+  "pillars": [
+    {
+      "id": "end_market_demand",
+      "name": "End-market demand growth",
+      "description": "Customer demand remains strong enough to support the investment thesis",
+      "key_indicators": "Unit growth, pricing, backlog, and management commentary",
+      "intact_signal": "Demand indicators stable or improving across the covered companies",
+      "invalidation_signal": "Demand weakens materially or customers cancel major projects"
+    },
+    {
+      "id": "customer_budget",
+      "name": "Major-customer budget trajectory",
+      "description": "MajorCustomerA/MajorCustomerB continue funding projects tied to the thesis",
+      "key_indicators": "Budget guidance, project commitments, and customer order backlog",
+      "intact_signal": "Budgets guide up or remain stable, with no broad project cancellations",
+      "invalidation_signal": "Multiple major customers cut relevant budgets in the same quarter"
+    },
+    {
+      "id": "competitive_threat",
+      "name": "EmergingCompetitor competitive threat contained",
+      "description": "EmergingCompetitor remains behind SupplierA/SupplierB on capability and scale",
+      "key_indicators": "EmergingCompetitor node progress, yield rates, product mix, sanctions effectiveness",
+      "intact_signal": "EmergingCompetitor remains at least one generation behind on key capabilities",
+      "invalidation_signal": "EmergingCompetitor reaches parity or captures meaningful share"
+    },
+    {
+      "id": "supply_discipline",
+      "name": "Supply discipline",
+      "description": "Industry supply growth stays aligned with demand instead of moving into oversupply",
+      "key_indicators": "Inventory days, lead times, capacity additions, and pricing discipline",
+      "intact_signal": "Inventories remain controlled and pricing does not deteriorate sharply",
+      "invalidation_signal": "Supply additions outpace demand and inventory builds across the sector"
+    },
+    {
+      "id": "revenue_materialization",
+      "name": "Revenue materialization",
+      "description": "The tracked theme converts into reported revenue instead of remaining narrative-only",
+      "key_indicators": "Segment revenue, customer adoption, bookings, and conversion from backlog",
+      "intact_signal": "Theme-linked revenue grows and management can identify durable customer demand",
+      "invalidation_signal": "Revenue growth stalls despite continued headline interest"
+    }
+  ]
+}
