@@ -8,8 +8,10 @@ these directly instead of routing through the Anthropic API.
 Must be imported AFTER server_http.py swaps app.mcp and registers tools.
 """
 
+import asyncio
 import logging
 import math
+import threading
 import time
 from decimal import Decimal
 from typing import Optional
@@ -46,6 +48,7 @@ def _param_errors_to_400(handler):
 
 from app import mcp
 from core.formatting import get_decimal
+from core import SNAPSHOT_SETTLE_SECS
 from core.fx import apply_fx_fallbacks, build_fx_cache
 
 # Tool functions and input models
@@ -55,7 +58,7 @@ from tools.account import (
 )
 from tools.intelligence import ibkr_currency, CurrencyInput
 from tools.risk import ibkr_stress_test, ibkr_what_if, StressTestInput, WhatIfInput
-from tools.orders import ibkr_trades, TradesInput
+from tools.orders import ibkr_get_orders, ibkr_trades, OrdersInput, TradesInput
 from tools.market_data import ibkr_dividends, ibkr_technicals, DividendInput, TechnicalsInput
 from tools.monitoring import (
     ibkr_connection_status, ibkr_margin_history, MarginHistoryInput,
@@ -75,19 +78,26 @@ from tools.intelligence import (
 from tools.briefing import (
     ibkr_geopolitical_risk, ibkr_thesis_check, GeopoliticalInput, ThesisCheckInput,
 )
-from tools.live_data import ibkr_compare_performance, PerformanceInput
+from tools.live_data import (
+    ibkr_compare_performance,
+    ibkr_get_option_chain,
+    OptionChainInput,
+    PerformanceInput,
+)
 
 logger = logging.getLogger("ibkr_mcp.dashboard")
 
 # Dashboard-specific config (from env)
 import os
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")  # kept as fallback signal; no longer used
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MCP_URL = os.environ.get("MCP_URL", "")
 YAHOO_CACHE_TTL = int(os.environ.get("YAHOO_CACHE_TTL", "30"))
 
 # Yahoo Finance price cache: symbol -> (data, timestamp)
+# Guarded by _cache_lock: /api/prices fans out across worker threads, so reads,
+# the eviction sweep, and writes would otherwise race on the same dict.
 _price_cache: dict[str, tuple[dict, float]] = {}
+_cache_lock = threading.Lock()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -214,7 +224,7 @@ def _account_summary_json(ib, account: str) -> dict:
         "maint_margin": _to_float(maint_margin),
         "excess_liquidity": _to_float(excess_init),
         "full_excess_liquidity": _to_float(get_decimal(vals, "FullExcessLiquidity")),
-        "cushion_pct": float(cushion_raw * 100) if cushion_raw else None,
+        "cushion_pct": float(cushion_raw * 100) if cushion_raw is not None else None,
         "leverage": float(gpv / nlv) if nlv and nlv != 0 else None,
         "margin_util_pct": float(init_margin / nlv * 100) if nlv and nlv != 0 else None,
     }
@@ -286,6 +296,9 @@ async def _positions_json(ib, account: str) -> list[dict]:
             "avg_cost": p.averageCost,
             "market_price": p.marketPrice,
             "market_value": p.marketValue,
+            # base-currency value — clients must sum THIS, not the native
+            # market_value, or CAD legs inflate gross/leverage (Jeff 2026-08-05)
+            "market_value_base": float(base_values[id(p)]),
             "unrealized_pnl": p.unrealizedPNL if not math.isnan(p.unrealizedPNL) else None,
             "currency": p.contract.currency,
             "weight_pct": round(
@@ -378,16 +391,20 @@ async def api_positions(request: Request) -> JSONResponse:
 def _fetch_yahoo_quote(symbol: str) -> dict:
     now = time.time()
 
-    # Evict stale entries on read (keeps cache bounded over long-running sessions)
-    if len(_price_cache) > 100:
-        stale = [k for k, (_, ts) in _price_cache.items() if now - ts > YAHOO_CACHE_TTL * 10]
-        for k in stale:
-            del _price_cache[k]
+    with _cache_lock:
+        # Evict stale entries on read (keeps cache bounded over long-running sessions)
+        if len(_price_cache) > 100:
+            stale = [k for k, (_, ts) in _price_cache.items() if now - ts > YAHOO_CACHE_TTL * 10]
+            for k in stale:
+                del _price_cache[k]
 
-    cached = _price_cache.get(symbol)
-    if cached and (now - cached[1]) < YAHOO_CACHE_TTL:
-        return cached[0]
+        cached = _price_cache.get(symbol)
+        if cached and (now - cached[1]) < YAHOO_CACHE_TTL:
+            return cached[0]
 
+    # The yfinance call is deliberately OUTSIDE the lock — it is a blocking
+    # network round-trip, and holding the lock across it would serialize the
+    # whole fan-out that _fetch_yahoo_quote is being threaded for.
     try:
         info = yf.Ticker(symbol).fast_info
         data = {
@@ -405,21 +422,85 @@ def _fetch_yahoo_quote(symbol: str) -> dict:
             data["change_pct"] = data["change"] / data["previous_close"] * 100
         else:
             data["change"] = data["change_pct"] = None
-        _price_cache[symbol] = (data, now)
+        with _cache_lock:
+            _price_cache[symbol] = (data, now)
         return data
     except Exception as e:
         logger.warning(f"Yahoo Finance error for {symbol}: {e}")
         return {"symbol": symbol, "error": str(e), "timestamp": now}
 
 
+async def _fetch_overnight_prices(symbols: list[str]) -> dict:
+    """Live overnight prints off IB's OVERNIGHT venue, same JSON shape as
+    the yahoo path. Best-effort: any failure returns {} and the caller falls
+    back to yahoo — quotes are garnish, never an outage."""
+    from ib_insync import Stock
+
+    from core.formatting import price_or_none
+    from core.sessions import is_overnight
+
+    if not is_overnight() or not symbols:
+        return {}
+    # only plain US-equity tickers have an overnight book — yahoo-style
+    # symbols (BTC-USD, DX-Y.NYB, ^VIX, ES=F) just spam Error 200 at the
+    # qualify step, one per sweep
+    import re as _re
+    equities = [s for s in symbols if _re.fullmatch(r"[A-Z]{1,5}", s)]
+    if not equities:
+        return {}
+    try:
+        await _ensure_connected_and_ctx()
+        ib = _get_ib()
+        contracts = [Stock(sym, "OVERNIGHT", "USD") for sym in equities]
+        qualified = [c for c in await ib.qualifyContractsAsync(*contracts) if c.conId]
+        if not qualified:
+            return {}
+        for c in qualified:
+            ib.reqMktData(c, "", True, False)
+        await asyncio.sleep(SNAPSHOT_SETTLE_SECS)
+        now = time.time()
+        out: dict = {}
+        for c in qualified:
+            t = ib.ticker(c)
+            last = price_or_none(t.last) if t else None
+            close = price_or_none(t.close) if t else None
+            if last is None:
+                continue                      # no print → let yahoo answer
+            row = {
+                "symbol": c.symbol, "price": last,
+                "previous_close": close,
+                "open": None, "day_high": None, "day_low": None,
+                "currency": "USD", "timestamp": now,
+                "session": "overnight", "source": "ibkr_overnight",
+            }
+            row["change"] = (last - close) if close else None
+            row["change_pct"] = (row["change"] / close * 100) if close else None
+            out[c.symbol] = row
+        return out
+    except Exception as e:                    # noqa: BLE001 — garnish, not outage
+        logger.warning(f"overnight prices failed, falling back to yahoo: {e}")
+        return {}
+
+
 @mcp.custom_route("/api/prices", methods=["GET"])
 @_param_errors_to_400
 async def api_prices(request: Request) -> JSONResponse:
-    """Live prices from Yahoo Finance (ibkr_quote has no market data sub)."""
+    """Live prices. Overnight (Sun 20:00 → Fri 20:00 ET, ex-daytime) the
+    IBKR OVERNIGHT venue answers first — yahoo's REST side freezes at the
+    20:00 print all night. Yahoo fills whatever IB has no book for."""
     raw = request.query_params.get("symbols", "")
     symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
-    results = {sym: _fetch_yahoo_quote(sym) for sym in symbols}
-    return JSONResponse({"prices": results, "source": "yahoo_finance"})
+    ibkr = await _fetch_overnight_prices(symbols)
+    remaining = [s for s in symbols if s not in ibkr]
+    # yfinance is blocking, so each symbol goes to a worker thread and they run
+    # concurrently. Serially inline this stalled the event loop for the sum of
+    # every symbol's round-trip, freezing all other /api routes meanwhile.
+    fetched = await asyncio.gather(
+        *(asyncio.to_thread(_fetch_yahoo_quote, sym) for sym in remaining)
+    )
+    results = {**dict(zip(remaining, fetched)), **ibkr}
+    return JSONResponse({"prices": results,
+                         "source": "ibkr_overnight+yahoo" if ibkr else "yahoo_finance"})
 
 
 # ── Tool Proxy Routes (return markdown) ──────────────────────────────
@@ -487,6 +568,29 @@ async def api_what_if(request: Request) -> JSONResponse:
     return JSONResponse({"markdown": await ibkr_what_if(params, ctx)})
 
 
+@mcp.custom_route("/api/fills", methods=["GET"])
+@_param_errors_to_400
+async def api_fills(request: Request) -> JSONResponse:
+    """Structured executions (JSON, not markdown) — feeds fragwire's fills
+    ledger. IB serves ~7 days back; the ledger's daily sweep + exec_id
+    dedupe turns that window into permanent history."""
+    from datetime import datetime, timedelta
+
+    from ib_insync import ExecutionFilter
+
+    from core.formatting import fills_to_json
+    await _ensure_connected_and_ctx()
+    qp = request.query_params
+    account = qp.get("account") or _get_accounts()[0]
+    days = min(int(qp.get("days", "7")), 7)
+    ib = _get_ib(account)
+    since = datetime.now() - timedelta(days=days)
+    fills = await ib.reqExecutionsAsync(
+        ExecutionFilter(acctCode=account, time=since.strftime("%Y%m%d 00:00:00")))
+    fills = [f for f in fills if f.execution.acctNumber == account]
+    return JSONResponse({"account": account, "fills": fills_to_json(fills)})
+
+
 @mcp.custom_route("/api/trades", methods=["GET"])
 @_param_errors_to_400
 async def api_trades(request: Request) -> JSONResponse:
@@ -498,6 +602,15 @@ async def api_trades(request: Request) -> JSONResponse:
         symbol_filter=qp.get("symbol_filter"),
     )
     return JSONResponse({"markdown": await ibkr_trades(params, ctx)})
+
+
+@mcp.custom_route("/api/orders", methods=["GET"])
+@_param_errors_to_400
+async def api_orders(request: Request) -> JSONResponse:
+    """Open orders from IBKR's live read-only order view."""
+    ctx = await _ensure_connected_and_ctx()
+    params = OrdersInput(account=request.query_params.get("account"))
+    return JSONResponse({"markdown": await ibkr_get_orders(params, ctx)})
 
 
 @mcp.custom_route("/api/dividends", methods=["GET"])
@@ -607,6 +720,20 @@ async def api_volatility(request: Request) -> JSONResponse:
         account=qp.get("account"),
     )
     return JSONResponse({"markdown": await ibkr_volatility(params, ctx)})
+
+
+@mcp.custom_route("/api/options", methods=["GET"])
+@_param_errors_to_400
+async def api_options(request: Request) -> JSONResponse:
+    """Available expirations or a live near-ATM option chain."""
+    qp = request.query_params
+    params = OptionChainInput(
+        symbol=qp["symbol"].strip().upper(),
+        expiration=qp.get("expiration"),
+        strikes_around_atm=int(qp.get("strikes_around_atm", "5")),
+    )
+    ctx = await _ensure_connected_and_ctx()
+    return JSONResponse({"markdown": await ibkr_get_option_chain(params, ctx)})
 
 
 # --- Tier-1 risk / intelligence routes (ported for /gateway commands) ---

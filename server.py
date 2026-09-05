@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-ibkr_mcp — Interactive Brokers MCP Server
+ibkr_mcp — Interactive Brokers MCP Server (stdio transport — DEPRECATED)
 
-Entry point for the MCP server. Imports the shared mcp instance from app.py,
-then imports tool modules which register their tools on it.
+DEPRECATED: every live consumer connects over HTTP (server_http.py), which is
+the only transport with the background reconnect loop, periodic account
+snapshots, and the offline response cache. stdio still runs for one-off local
+testing but gets none of that resilience and will not receive further
+transport-level features.
 
-Usage:
-    # Direct (for testing)
-    python server.py
+Use instead (Claude Code ~/.claude.json):
+    "ibkr": {"type": "http", "url": "http://localhost:8001/mcp"}
 
-    # With Claude Code (add to ~/.claude.json)
-    "ibkr": {
-        "command": "python",
-        "args": ["/path/to/ibkr-mcp/server.py"]
-    }
+Entry point imports the shared mcp instance from app.py, then imports tool
+modules which register their tools on it.
 """
 
 # Patch asyncio BEFORE anything else imports or creates an event loop.
@@ -47,5 +46,11 @@ import tools.volatility   # noqa: F401, E402
 
 
 if __name__ == "__main__":
-    # stdio transport — Claude Code runs this as a subprocess
+    # stdio transport — kept for one-off local testing only
+    import sys
+    print(
+        "WARNING: stdio transport is DEPRECATED — no reconnect loop, no "
+        "snapshots, no offline cache. Use server_http.py (http://localhost:8001/mcp).",
+        file=sys.stderr,
+    )
     mcp.run()

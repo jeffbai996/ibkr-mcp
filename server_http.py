@@ -34,6 +34,7 @@ import nest_asyncio
 nest_asyncio.apply()
 
 import asyncio
+import base64
 import logging
 import os
 import signal
@@ -42,6 +43,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import NoReturn
 
 from dotenv import load_dotenv
@@ -49,7 +51,7 @@ load_dotenv()
 
 from ib_insync import IB
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import TransportSecuritySettings
+from mcp.types import Icon
 
 from config import (
     IB_HOST, IB_PORT, IB_CLIENT_ID, IB_TIMEOUT, IB_READONLY,
@@ -279,6 +281,28 @@ async def _connect_ib2() -> tuple[IB | None, str]:
 
 _reconnect_task: asyncio.Task | None = None
 
+# Periodic NLV/margin snapshot cadence (minutes; 0 disables). History used to
+# be written only as a drawdown-tool side effect — gaps on exactly the days
+# nobody looked. The recorder piggybacks on the reconnect loop's tick.
+IBKR_SNAPSHOT_INTERVAL_MIN = int(os.environ.get("IBKR_SNAPSHOT_INTERVAL_MIN", "30"))
+_last_snapshot_mono: float = 0.0
+
+
+async def _record_periodic_snapshots(primary_ok: bool, secondary_ok: bool) -> int:
+    """Record one snapshot row per CONNECTED account. Never raises — a failed
+    account is a missed sample (logged in core.snapshots), not a loop death."""
+    from core.snapshots import record_account_snapshot
+    wrote = 0
+    if primary_ok and _ib is not None and _primary_account:
+        wrote += bool(await record_account_snapshot(_ib, _primary_account))
+    if IB_PORT_2 and secondary_ok and _ib2 is not None and _secondary_account:
+        wrote += bool(await record_account_snapshot(_ib2, _secondary_account))
+    if wrote:
+        # INFO, not debug: ~2 lines/hour, and it's the observable proof the
+        # margin-history trail is alive without querying the DB.
+        logger.info(f"Periodic snapshot: {wrote} account(s) recorded")
+    return wrote
+
 
 def _on_reconnect_task_done(task: asyncio.Task) -> None:
     """Callback when the reconnect task exits — log why and restart it.
@@ -320,6 +344,7 @@ async def _background_reconnect_loop() -> NoReturn:
     needing a new MCP session.
     """
     global _ib, _ib2, _primary_account, _secondary_account, _account_map, _health_map
+    global _last_snapshot_mono
 
     # Try immediately on first run — secondary was deferred from lifespan
     _first_run = True
@@ -373,6 +398,26 @@ async def _background_reconnect_loop() -> NoReturn:
                 except Exception:
                     pass
                 secondary_ok = False
+
+        # Periodic NLV/margin snapshot — must run BEFORE the all-healthy
+        # `continue` below, or history would only ever record while a
+        # connection was broken (exactly backwards). Piggybacks on this
+        # loop's tick like cache eviction; monotonic clock so a wall-clock
+        # jump can't stall or burst the cadence.
+        from core.snapshots import snapshot_due
+        _now_mono = time.monotonic()
+        if snapshot_due(_last_snapshot_mono, _now_mono, IBKR_SNAPSHOT_INTERVAL_MIN):
+            try:
+                # Consume the slot only when a row actually landed: the first
+                # tick usually runs BEFORE the gateways connect, and burning
+                # the immediate-seed sample on (False, False) pushed the first
+                # real snapshot a full interval out. Retrying every tick while
+                # nothing is connected costs nothing (the helper no-ops).
+                if await _record_periodic_snapshots(primary_ok, secondary_ok):
+                    _last_snapshot_mono = _now_mono
+            except Exception as e:
+                logger.warning(f"Periodic snapshot pass failed: {e}")
+                _last_snapshot_mono = _now_mono  # don't spin on a hard failure
 
         if primary_ok and secondary_ok:
             continue
@@ -481,7 +526,27 @@ async def http_lifespan(server: FastMCP) -> AsyncIterator[dict]:
 from auth import wiring as oauth_wiring  # noqa: E402
 
 import app  # noqa: E402
-app.mcp = FastMCP("ibkr_mcp", lifespan=http_lifespan,
+
+# --- MCP server icon (SEP-973) ------------------------------------------
+# Rising bars, amber #e3b341 — the accent telemetry already uses for a live
+# instrument. Base64 at import: a data URI means the client never reaches back
+# into the tailnet to draw it. claude.ai ignores this field today; it costs
+# nothing and is correct whenever that changes.
+_ICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<rect x="3" y="14" width="4" height="7" rx="1" fill="#e3b341"/>'
+    '<rect x="10" y="9" width="4" height="12" rx="1" fill="#e3b341"/>'
+    '<rect x="17" y="4" width="4" height="17" rx="1" fill="#e3b341"/>'
+    '</svg>'
+)
+_ICONS = [Icon(
+    src="data:image/svg+xml;base64,"
+        + base64.b64encode(_ICON_SVG.encode()).decode(),
+    mimeType="image/svg+xml",
+    sizes=["any"],
+)]
+
+app.mcp = FastMCP("ibkr_mcp", lifespan=http_lifespan, icons=_ICONS,
                   **oauth_wiring.fastmcp_auth_kwargs())
 mcp = app.mcp
 
@@ -495,6 +560,12 @@ import tools.risk         # noqa: F401, E402
 import tools.intelligence # noqa: F401, E402
 import tools.monitoring   # noqa: F401, E402
 import tools.briefing     # noqa: F401, E402
+
+# --- OAuth owner-approval page (only rendered when OAuth is on) ---
+if oauth_wiring.oauth_enabled():
+    from auth import unlock as _unlock  # noqa: E402
+    mcp.custom_route("/oauth/unlock", methods=["GET"])(_unlock.unlock_get)
+    mcp.custom_route("/oauth/unlock", methods=["POST"])(_unlock.unlock_post)
 import tools.selftest     # noqa: F401, E402
 import tools.news         # noqa: F401, E402
 import tools.fundamentals # noqa: F401, E402
@@ -573,18 +644,51 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             return _AuthJSONResponse({"error": "unauthorized"}, status_code=401)
         return await call_next(request)
 
-# Dashboard frontend dist directory (built by Vite)
-DASHBOARD_DIST = os.environ.get(
-    "DASHBOARD_DIST",
-    os.path.join(os.path.dirname(__file__), "..", "ibkr-dashboard", "frontend", "dist"),
+_DEFAULT_DASHBOARD_DIST = (
+    Path(__file__).resolve().parent.parent / "ibkr-dashboard" / "frontend" / "dist"
 )
+DASHBOARD_DIST = os.environ.get("DASHBOARD_DIST")
+
+
+def resolve_dashboard_dist(
+    value: str | None,
+    *,
+    default: str | Path = _DEFAULT_DASHBOARD_DIST,
+) -> Path | None:
+    """Return a built dashboard directory, never an empty-path working dir."""
+    if value is None:
+        raw = str(default)
+    else:
+        raw = value.strip()
+        if not raw:
+            return None
+    candidate = Path(raw).expanduser().resolve()
+    if not candidate.is_dir() or not (candidate / "index.html").is_file():
+        return None
+    return candidate
+
+
+def mount_dashboard(
+    app,
+    value: str | None,
+    *,
+    default: str | Path = _DEFAULT_DASHBOARD_DIST,
+) -> Path | None:
+    """Mount only a validated frontend build, never the service working tree."""
+    from starlette.routing import Mount
+    from starlette.staticfiles import StaticFiles
+
+    dist_dir = resolve_dashboard_dist(value, default=default)
+    if dist_dir is not None:
+        app.router.routes.append(
+            Mount("/", app=StaticFiles(directory=str(dist_dir), html=True),
+                  name="dashboard")
+        )
+    return dist_dir
 
 
 if __name__ == "__main__":
     import uvicorn
-    from pathlib import Path
-    from starlette.routing import Mount
-    from starlette.staticfiles import StaticFiles
 
     logging.basicConfig(
         level=logging.INFO,
@@ -614,42 +718,65 @@ if __name__ == "__main__":
     # Safe because all state lives in IB Gateway, not MCP sessions.
     mcp.settings.stateless_http = True
 
-    # Disable DNS rebinding protection — requests come through Tailscale
-    # Funnel with a non-localhost Host header, not 0.0.0.0
-    mcp.settings.transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
-    )
+    # Validate Host and browser Origin before either OAuth or trusted-network
+    # dispatch. Loopback and the configured OAuth issuer are automatic;
+    # additional private proxy names are explicit environment allowlists.
+    mcp.settings.transport_security = oauth_wiring.mcp_transport_security()
 
     # Get the Starlette app from FastMCP, then add static file serving
     starlette_app = mcp.streamable_http_app()
 
     # --- Opt-in static bearer auth (F-01) + OAuth composition ---
     _oauth_on = oauth_wiring.oauth_enabled()
+    _static_token = os.environ.get("MCP_HTTP_TOKEN", "").strip()
     starlette_app.add_middleware(
         BearerAuthMiddleware,
-        token=os.environ.get("MCP_HTTP_TOKEN", "").strip(),
+        token=_static_token,
         oauth_active=_oauth_on,
     )
+    from auth.rest import (
+        AuthorityValidationMiddleware,
+        TokenlessApiHostMiddleware,
+        VerifiedTailnetHostMiddleware,
+    )
+    starlette_app.add_middleware(
+        TokenlessApiHostMiddleware,
+        token=_static_token,
+        port=MCP_HTTP_PORT,
+        allowed_hosts=oauth_wiring.http_allowed_hosts(MCP_HTTP_PORT),
+    )
+    serve_app = starlette_app
     if _oauth_on:
-        logger.info("HTTP auth: OAuth 2.1 ENABLED on /mcp (issuer %s) — "
-                    "discovery + flow routes at origin root",
-                    oauth_wiring.oauth_issuer_url())
-    if os.environ.get("MCP_HTTP_TOKEN", "").strip():
+        # owner approval in front of /authorize, and the trust boundary in
+        # front of everything: loopback / verified-tailnet MCP callers keep
+        # their OAuth-free access, the public Funnel path gets the gate
+        from mcp.server.fastmcp.server import StreamableHTTPASGIApp
+        from auth.approval import OAuthApprovalMiddleware
+        from auth.boundary import McpOAuthBoundary
+        oauth_wiring.advertise_public_clients(starlette_app)
+        starlette_app.add_middleware(OAuthApprovalMiddleware)
+        serve_app = McpOAuthBoundary(starlette_app, StreamableHTTPASGIApp(mcp.session_manager))
+        logger.info("HTTP auth: OAuth 2.1 ENABLED on /mcp (issuer %s) — owner approval on, "
+                    "loopback + tailnet callers bypass",
+                    oauth_wiring.issuer_root(oauth_wiring.oauth_issuer_url()))
+    if _static_token:
         logger.info("HTTP auth: static bearer gate ENABLED (MCP_HTTP_TOKEN set)%s",
                     " — covering /api/* only; /mcp + OAuth flow exempt" if _oauth_on else "")
     elif not _oauth_on:
         logger.warning("HTTP auth: DISABLED (MCP_HTTP_TOKEN unset) — surface is "
                        "unauthenticated. Set MCP_HTTP_TOKEN + update clients to enable.")
 
-    dist_dir = Path(DASHBOARD_DIST)
-    if dist_dir.exists():
-        # Append static file mount AFTER MCP + API routes (lower priority)
-        starlette_app.router.routes.append(
-            Mount("/", app=StaticFiles(directory=str(dist_dir), html=True), name="dashboard")
-        )
+    # Raw header cardinality/syntax is checked outside every dispatch path.
+    # Verified Serve requests are then normalized to the loopback authority;
+    # Funnel and direct browser traffic cannot satisfy that identity predicate.
+    serve_app = VerifiedTailnetHostMiddleware(serve_app, port=MCP_HTTP_PORT)
+    serve_app = AuthorityValidationMiddleware(serve_app)
+
+    dist_dir = mount_dashboard(starlette_app, DASHBOARD_DIST)
+    if dist_dir is not None:
         logger.info(f"Dashboard: serving frontend from {dist_dir}")
     else:
-        logger.info(f"Dashboard: no frontend found at {dist_dir} (API-only mode)")
+        logger.info("Dashboard: no built frontend configured (API-only mode)")
 
     logger.info("To expose via Tailscale Funnel: tailscale funnel %d", MCP_HTTP_PORT)
 
@@ -733,7 +860,7 @@ if __name__ == "__main__":
     # uvicorn>=0.30 which passes loop_factory to asyncio.run() — a kwarg
     # the nest_asyncio-patched run() doesn't accept.
     async def _run_server() -> None:
-        config = uvicorn.Config(starlette_app, host=MCP_HTTP_HOST, port=MCP_HTTP_PORT)
+        config = uvicorn.Config(serve_app, host=MCP_HTTP_HOST, port=MCP_HTTP_PORT)
         server = uvicorn.Server(config)
         await server.serve()
 

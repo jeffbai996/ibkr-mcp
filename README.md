@@ -2,11 +2,11 @@
 
 **An MCP server that turns Interactive Brokers into a question-answering portfolio analyst.**
 
-Ask your portfolio anything in plain English — *"how does my book hold up if rates rip 100bps and the dollar strengthens 5%?"* — and an LLM picks the right tools, chains them, and writes the answer. 41 read-only analytics tools across margin, risk, market data, news, fundamentals, and portfolio intelligence, exposed over the [Model Context Protocol](https://modelcontextprotocol.io).
+Ask your portfolio anything in plain English — *"how does my book hold up if rates rip 100bps and the dollar strengthens 5%?"* — and an LLM picks the right tools, chains them, and writes the answer. 43 read-only analytics tools across margin, risk, market data, news, fundamentals, and portfolio intelligence, exposed over the [Model Context Protocol](https://modelcontextprotocol.io).
 
-Tool docstrings are kept tight (1-2 sentences each) so MCP schema overhead at session start stays low for all 41 tools combined.
+Tool docstrings are kept tight (1-2 sentences each) so MCP schema overhead at session start stays low for all 43 tools combined.
 
-> This repo is published as a **teardown** — the public-facing server layer of a system I built and run for my own trading. The 41 tool implementations live in a private package and are not included here. The purpose is to show how the pieces fit, what tradeoffs I made, and what shipping against the IBKR API actually looks like. See [Status](#status) below.
+> This repo is published as a **teardown** — the public-facing server layer of a system I built and run for my own trading. The 43 tool implementations live in a private package and are not included here. The purpose is to show how the pieces fit, what tradeoffs I made, and what shipping against the IBKR API actually looks like. See [Status](#status) below.
 
 <p align="center">
 <img src="assets/demo-dashboard.png" width="88%" />
@@ -80,6 +80,10 @@ _2026-05-03 17:17:44 UTC_
 ```
 
 The vanilla model can't produce any of that — NLV, cushion, weights, daily P&L are all live IBKR state. The tool aggregates `accountSummary`, `portfolio`, the PnL subscription, and connection health into one response so the model can reason about the whole picture without fan-out. Connection status is auto-suppressed when the gateway is connected and data is fresh (< 60s old) — it only appears when something's wrong. Pass `compact=true` to drop Top Movers and Risk Metrics for a shorter morning read.
+
+Pass `since_last=true` to get a delta-only view — NLV/cushion/leverage changes plus new, closed, and >1%-moved positions since the last FULL (non-`since_last`) briefing, instead of re-rendering everything. If no baseline has been stored yet, it falls back to a full briefing and stores one for next time. Calling `since_last=true` repeatedly does NOT move the baseline forward — the delta always stays anchored to the last full briefing, so only running another full briefing resets the comparison point.
+
+**Terse output.** `ibkr_briefing`, `ibkr_margin`, `ibkr_get_positions`, and `ibkr_get_account_summary` accept `format="terse"` (default `"markdown"`). Terse mode returns the same numbers as compact key:value lines — headers become `SECTION:` tags, tables become flat `SYM qty=.. px=.. pnl=..` rows, and decorative prose/bold is dropped — cutting per-call characters ~20-40% on already-tabular reads and more on the prose-heavy briefing. It composes with `compact`/`since_last` (a terse delta briefing is very short). `format` never fragments the response cache: the raw markdown is cached once and the terse transform is applied after retrieval, so a cached response served while the gateway is offline still honors `format="terse"`. The generic markdown→terse squeeze (`core/terse.squeeze`) is available for wiring `format` into other tools; the four above have hand-tuned terse builders.
 
 ### `ibkr_thesis_check` — does this news threaten my thesis?
 
@@ -214,7 +218,7 @@ Five tickers in five different sectors can still be a single bet. The matrix pul
 
 ## Architecture
 
-This repo is the **server layer** — transports, lifecycle, dashboard REST API. Development happens in a single private monorepo; the `core/` and `tools/` packages (the 32 tool implementations and shared infrastructure) are stripped out at publish time, leaving this teardown (the left half below). The shell imports those packages as plain in-tree modules — which is why the code here references `core.*`/`tools.*` but can't run without them.
+This repo is the **server layer** — transports, lifecycle, dashboard REST API. Development happens in a single private monorepo; the `core/` and `tools/` packages (the 43 tool implementations and shared infrastructure) are stripped out at publish time, leaving this teardown (the left half below). The shell imports those packages as plain in-tree modules — which is why the code here references `core.*`/`tools.*` but can't run without them.
 
 ```
   PUBLIC TEARDOWN (this repo)              PRIVATE (stripped at publish)
@@ -231,12 +235,12 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 ┌──────────────────────────────┐         │    intelligence · monitoring │
 │   IB Gateway / TWS           │         │    orders                    │
 │   primary + optional 2nd     │         │                              │
-└──────────────────────────────┘         │  → 41 tools, registered      │
+└──────────────────────────────┘         │  → 43 tools, registered      │
                                          │    on app.mcp via @mcp.tool  │
                                          └──────────────────────────────┘
 ```
 
-**Two transports, one tool surface.** `server.py` runs over stdio for local Claude Code. `server_http.py` runs over streamable HTTP for claude.ai and any remote MCP client. Both share `app.py`'s FastMCP instance — tools register once, accessible everywhere. `server_http.py` swaps `app.mcp` with an HTTP-configured instance *before* importing tool modules so the `@mcp.tool()` decorators fire against the correct transport.
+**Two transports, one tool surface — stdio now deprecated.** `server_http.py` (streamable HTTP) is the transport: it owns the reconnect loop, periodic account snapshots, and the offline cache, and it's what every live consumer (local Claude Code included) connects to. `server.py` (stdio) still runs for one-off local testing but is deprecated — it gets none of the resilience layer and receives no further transport-level features. Both share `app.py`'s FastMCP instance — tools register once, accessible everywhere. `server_http.py` swaps `app.mcp` with an HTTP-configured instance *before* importing tool modules so the `@mcp.tool()` decorators fire against the correct transport.
 
 **Dashboard sidecar.** `dashboard.py` registers `/api/*` routes via `@mcp.custom_route()` on the same Starlette app — REST endpoints (positions, summary, FX, technicals, history) for a Vite frontend, served from the same port as the MCP protocol. Frontend lives in a separate repo.
 
@@ -244,7 +248,7 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 
 ## Why it was built this way
 
-**Why FastMCP and not raw MCP.** The decorator-driven tool registration (`@mcp.tool()`) keeps tool definitions co-located with their input schemas (Pydantic models). 41 tools across 14 files means the alternative — manually wiring up handlers — would have been a maintenance pit. FastMCP's pain is its lifespan model differs between transports (single-shot for stdio, per-session for HTTP), which forced the split below.
+**Why FastMCP and not raw MCP.** The decorator-driven tool registration (`@mcp.tool()`) keeps tool definitions co-located with their input schemas (Pydantic models). 43 tools across 14 files means the alternative — manually wiring up handlers — would have been a maintenance pit. FastMCP's pain is its lifespan model differs between transports (single-shot for stdio, per-session for HTTP), which forced the split below.
 
 **Why a background reconnect loop instead of connect-on-demand.** IB Gateway disconnects daily for the auto-restart, drops sessions when the user logs into TWS from another machine, and silently dies on idle TCP timeouts (more on that below). The naive approach — connect inside the lifespan, fail the request if down — meant every user-facing prompt during a 5-minute outage returned an error. The reconnect loop runs every 30s, owns the lock, and tools that hit it during an outage degrade gracefully via the cache layer with a staleness banner. The lifespan never blocks.
 
@@ -262,7 +266,7 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 
 ## Tool catalog
 
-41 tools across 14 modules. Implementations are private; the surface is documented here so you can see what the model has to work with. The Account group is below; expand for the full list.
+43 tools across 14 modules. Implementations are private; the surface is documented here so you can see what the model has to work with. The Account group is below; expand for the full list.
 
 | Tool | Purpose |
 |---|---|
@@ -274,7 +278,7 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 | `ibkr_consolidated_view` | Cross-gateway aggregation with FX conversion |
 
 <details>
-<summary><strong>Show all 41 tools — Briefing, Portfolio, Market data, Live data, Risk, Intelligence, Monitoring, Orders, News, Fundamentals, Scanner, Shortable, Volatility</strong></summary>
+<summary><strong>Show all 43 tools — Briefing, Portfolio, Market data, Live data, Risk, Intelligence, Monitoring, Orders, News, Fundamentals, Scanner, Shortable, Volatility</strong></summary>
 
 | Tool | Purpose |
 |---|---|
@@ -299,6 +303,7 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 | **Risk** | |
 | `ibkr_what_if` | Margin impact simulation via `whatIfOrder()` |
 | `ibkr_margin_ladder` | Per-name forced-liquidation price levels (single-name shock model) |
+| `ibkr_break_levels` | Inverse stress test — per-position and whole-book price levels where cushion hits 5% / 2.5% / 0% |
 | `ibkr_correlation_matrix` | Pairwise correlation, 60 or 252 trading days |
 | `ibkr_portfolio_beta` | Per-position and weighted beta vs benchmark |
 | `ibkr_stress_test` | Preflight / drawdown curve / overnight gap (3 scenarios) |
@@ -311,6 +316,7 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 | **Monitoring** | |
 | `ibkr_drawdown_tracker` | Drawdown from peak NLV (SQLite-backed history) |
 | `ibkr_margin_history` | Daily NLV / leverage / cushion time-series with margin-creep warning |
+| `ibkr_cushion_runway` | Days until cushion hits 5% / 2.5% / 0% under −0.5σ/−1σ/−2σ daily drift; realized NLV vol from history |
 | `ibkr_connection_status` | Per-gateway TCP / data freshness / event log |
 | `ibkr_selftest` | Fire every read-only tool with safe args; OK/EMPTY/ERROR roll-up |
 | **Orders** | |
@@ -339,7 +345,7 @@ Python 3.11+ · `mcp` (FastMCP) · `ib_insync` · `pydantic` · `uvicorn` · `ht
 
 ## Status
 
-This repo is the public server layer. The 41 tool implementations and shared infrastructure (`core/`, `tools/`) are kept private and **not redistributed** — they're stripped from the monorepo at publish time. As a result, the code in this repo is not runnable standalone — it's published as a teardown / case study, not as a fork-and-run project.
+This repo is the public server layer. The 43 tool implementations and shared infrastructure (`core/`, `tools/`) are kept private and **not redistributed** — they're stripped from the monorepo at publish time. As a result, the code in this repo is not runnable standalone — it's published as a teardown / case study, not as a fork-and-run project.
 
 If you want to build something similar, the patterns in [Why it was built this way](#why-it-was-built-this-way) and [Architecture](#architecture) are the parts worth stealing.
 
