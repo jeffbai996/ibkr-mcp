@@ -14,9 +14,10 @@ cache the connection for all subsequent sessions.
 Supports dual-gateway mode: if IB_PORT_2 is set, lazily connects to a
 second IB Gateway instance alongside the primary.
 
-Security: Designed to run behind Tailscale Funnel, which provides HTTPS
-and a non-guessable URL. All tools are read-only (no order placement).
-Do NOT expose this directly to the public internet without auth.
+Security: The listener defaults to loopback for Tailscale Serve/Funnel or a
+local dashboard. A non-loopback bind requires a static bearer token because
+OAuth protects /mcp but not the dashboard /api surface. All brokerage tools
+are read-only (no order placement).
 
 Usage:
     # Run the HTTP server
@@ -35,6 +36,7 @@ nest_asyncio.apply()
 
 import asyncio
 import base64
+import ipaddress
 import logging
 import os
 import signal
@@ -589,14 +591,59 @@ async def _oauth_status(request):  # noqa: ANN001
 @mcp.custom_route("/api/oauth/revoke_client", methods=["POST"])
 async def _oauth_revoke_client(request):  # noqa: ANN001
     from starlette.responses import JSONResponse
-    body = await request.json()
-    client_id = (body or {}).get("client_id") or ""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    client_id = body.get("client_id") or ""
     if not client_id:
         return JSONResponse({"error": "client_id required"}, status_code=400)
     return JSONResponse({"revoked": oauth_wiring.revoke_client(client_id)})
 
-MCP_HTTP_HOST = os.environ.get("MCP_HTTP_HOST", "0.0.0.0")
+MCP_HTTP_HOST = os.environ.get("MCP_HTTP_HOST", "127.0.0.1")
 MCP_HTTP_PORT = int(os.environ.get("MCP_HTTP_PORT", "8000"))
+
+
+def validate_http_bind_security(
+    host: str,
+    *,
+    static_token: str = "",
+    oauth_active: bool = False,
+) -> None:
+    """Refuse a remotely reachable tokenless listener.
+
+    Host headers describe the requested authority, not the peer socket, so a
+    remote client can forge ``Host: 127.0.0.1``. OAuth currently protects only
+    /mcp; a static token is the boundary that also covers /api/*.
+    """
+    raw_host = (host or "").strip()
+    literal = (
+        raw_host[1:-1]
+        if raw_host.startswith("[") and raw_host.endswith("]")
+        else raw_host
+    )
+    try:
+        address = ipaddress.ip_address(literal)
+        mapped = getattr(address, "ipv4_mapped", None)
+        loopback = address.is_loopback or bool(mapped and mapped.is_loopback)
+    except ValueError:
+        # Hostnames are resolved later by Uvicorn. Refuse to trust even the
+        # spelling "localhost" because a poisoned resolver could bind it
+        # remotely after this check.
+        loopback = False
+    if loopback or (static_token or "").strip():
+        return
+
+    oauth_note = (
+        " OAuth is active for /mcp, but /api/* still requires MCP_HTTP_TOKEN."
+        if oauth_active else ""
+    )
+    raise RuntimeError(
+        f"Refusing unauthenticated non-loopback MCP_HTTP_HOST={raw_host!r}."
+        f" Bind 127.0.0.1 or configure MCP_HTTP_TOKEN.{oauth_note}"
+    )
 
 
 import hmac as _hmac
@@ -623,12 +670,29 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     two different Authorization headers on one request. This middleware then
     only covers what OAuth cannot: the /api/* dashboard surface. That split is
     why the static gate stays instead of being deleted outright.
+
+    Loopback exemption (opt-in, ``exempt_direct_loopback`` /
+    MCP_HTTP_TOKEN_EXEMPT_LOOPBACK=1): a request whose peer socket is loopback,
+    whose Host names a loopback authority, and which carries no proxy or
+    Tailscale transit header is admitted without the token. That is the shape
+    of the host-local consumers (Discord brief bot, local curl), so the gate
+    can be switched on without a coordinated client push. It is verified on
+    the socket, not on a header a stranger can add — but see
+    ``auth.boundary.is_direct_loopback_request`` for what a local TCP
+    forwarder does to that boundary.
     """
 
-    def __init__(self, app, token: str = "", oauth_active: bool = False):
+    def __init__(
+        self,
+        app,
+        token: str = "",
+        oauth_active: bool = False,
+        exempt_direct_loopback: bool = False,
+    ):
         super().__init__(app)
         self._token = (token or "").strip()
         self._oauth_active = bool(oauth_active)
+        self._exempt_direct_loopback = bool(exempt_direct_loopback)
 
     async def dispatch(self, request, call_next):
         if not self._token:
@@ -637,6 +701,10 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             from auth.wiring import bearer_exempt
             if bearer_exempt(request.url.path):
                 return await call_next(request)  # OAuth's surface, not ours
+        if self._exempt_direct_loopback:
+            from auth.boundary import is_direct_loopback_request
+            if is_direct_loopback_request(request.scope):
+                return await call_next(request)  # same-machine caller
         header = request.headers.get("authorization", "")
         prefix = "Bearer "
         supplied = header[len(prefix):] if header.startswith(prefix) else ""
@@ -702,6 +770,17 @@ if __name__ == "__main__":
                 f"IB_PORT_2={IB_PORT_2}, IB_CLIENT_ID_2={IB_CLIENT_ID_2}, "
                 f"SECONDARY_ACCOUNT={SECONDARY_ACCOUNT or '(auto)'}")
 
+    _oauth_on = oauth_wiring.oauth_enabled()
+    _static_token = os.environ.get("MCP_HTTP_TOKEN", "").strip()
+    _exempt_loopback = os.environ.get(
+        "MCP_HTTP_TOKEN_EXEMPT_LOOPBACK", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    validate_http_bind_security(
+        MCP_HTTP_HOST,
+        static_token=_static_token,
+        oauth_active=_oauth_on,
+    )
+
     mcp.settings.host = MCP_HTTP_HOST
     mcp.settings.port = MCP_HTTP_PORT
 
@@ -727,12 +806,11 @@ if __name__ == "__main__":
     starlette_app = mcp.streamable_http_app()
 
     # --- Opt-in static bearer auth (F-01) + OAuth composition ---
-    _oauth_on = oauth_wiring.oauth_enabled()
-    _static_token = os.environ.get("MCP_HTTP_TOKEN", "").strip()
     starlette_app.add_middleware(
         BearerAuthMiddleware,
         token=_static_token,
         oauth_active=_oauth_on,
+        exempt_direct_loopback=_exempt_loopback,
     )
     from auth.rest import (
         AuthorityValidationMiddleware,
@@ -760,17 +838,34 @@ if __name__ == "__main__":
                     "loopback + tailnet callers bypass",
                     oauth_wiring.issuer_root(oauth_wiring.oauth_issuer_url()))
     if _static_token:
-        logger.info("HTTP auth: static bearer gate ENABLED (MCP_HTTP_TOKEN set)%s",
-                    " — covering /api/* only; /mcp + OAuth flow exempt" if _oauth_on else "")
-    elif not _oauth_on:
-        logger.warning("HTTP auth: DISABLED (MCP_HTTP_TOKEN unset) — surface is "
-                       "unauthenticated. Set MCP_HTTP_TOKEN + update clients to enable.")
+        logger.info("HTTP auth: static bearer gate ENABLED (MCP_HTTP_TOKEN set)%s%s",
+                    " — covering /api/* only; /mcp + OAuth flow exempt" if _oauth_on else "",
+                    " — direct loopback callers exempt (MCP_HTTP_TOKEN_EXEMPT_LOOPBACK)"
+                    if _exempt_loopback else "")
+    else:
+        # OAuth never covered /api/*; say so even when OAuth is on, otherwise
+        # the only auth line in the log reads "ENABLED" and the dashboard
+        # surface looks protected when it is not.
+        logger.warning(
+            "HTTP auth: static bearer gate DISABLED (MCP_HTTP_TOKEN unset) — /api/* "
+            "(dashboard REST, /api/query Gemini loop, /api/oauth/*) is unauthenticated "
+            "for every caller that reaches %s:%d, including local TCP forwarders such "
+            "as a docker-gateway bridge.%s",
+            MCP_HTTP_HOST, MCP_HTTP_PORT,
+            " OAuth gates /mcp only." if _oauth_on else
+            " Set MCP_HTTP_TOKEN (+ MCP_HTTP_TOKEN_EXEMPT_LOOPBACK=1 to keep host-local "
+            "consumers working) to enable.",
+        )
 
     # Raw header cardinality/syntax is checked outside every dispatch path.
     # Verified Serve requests are then normalized to the loopback authority;
     # Funnel and direct browser traffic cannot satisfy that identity predicate.
     serve_app = VerifiedTailnetHostMiddleware(serve_app, port=MCP_HTTP_PORT)
     serve_app = AuthorityValidationMiddleware(serve_app)
+    # /register is deliberately public for OAuth DCR, so bound it before the
+    # SDK parses JSON or touches the persistent client store.
+    from auth.admission import RegistrationAdmissionMiddleware
+    serve_app = RegistrationAdmissionMiddleware(serve_app)
 
     dist_dir = mount_dashboard(starlette_app, DASHBOARD_DIST)
     if dist_dir is not None:

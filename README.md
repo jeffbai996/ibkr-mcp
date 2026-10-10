@@ -21,7 +21,7 @@ Each tool does one composable thing. The model handles orchestration — pull po
 
 **Portfolio**  Positions, P&L, cost basis, concentration, multi-account consolidated view, dividends.
 **Margin**  Real-time margin analysis, what-if simulation, per-symbol efficiency (RegT vs portfolio margin).
-**Risk**  Stress testing with custom scenarios (rates, FX, vol, drawdown), correlation matrix, parametric VaR, drawdown tracker against high-water mark.
+**Risk**  Stress testing with custom scenarios (rates, FX, vol, drawdown), correlation matrix, parametric VaR, drawdown tracker against an explicit peak in the current account currency.
 **Market data**  Quotes, historical bars, intraday, options chains with Greeks, technicals (SMA / RSI / MACD / Bollinger), contract search.
 **Intelligence**  Currency exposure decomposition, sector exposure, rebalance planner, portfolio beta, position-level thesis check, geopolitical risk scoring.
 **Briefing**  One-prompt daily briefing — positions, P&L, margin, top movers, thesis status, geopolitical flags.
@@ -314,9 +314,9 @@ This repo is the **server layer** — transports, lifecycle, dashboard REST API.
 | `ibkr_position_detail` | Deep dive — cost basis, weight, P&L, margin, technicals, recent bars |
 | `ibkr_rebalance_planner` | `SYM:PCT` solver — current vs target, action, shares, dollars; warns when targets don't sum to ~100% |
 | **Monitoring** | |
-| `ibkr_drawdown_tracker` | Drawdown from peak NLV (SQLite-backed history) |
-| `ibkr_margin_history` | Daily NLV / leverage / cushion time-series with margin-creep warning |
-| `ibkr_cushion_runway` | Days until cushion hits 5% / 2.5% / 0% under −0.5σ/−1σ/−2σ daily drift; realized NLV vol from history |
+| `ibkr_drawdown_tracker` | Drawdown from an explicit peak in the current account currency; stored peak units are unverified |
+| `ibkr_margin_history` | Daily leverage / cushion with margin-creep warning; stored NLV and excess liquidity are withheld without currency provenance |
+| `ibkr_cushion_runway` | Days until cushion hits 5% / 2.5% / 0% under −0.5σ/−1σ/−2σ daily drift; labeled volatility placeholder because current snapshots do not record currency provenance |
 | `ibkr_connection_status` | Per-gateway TCP / data freshness / event log |
 | `ibkr_selftest` | Fire every read-only tool with safe args; OK/EMPTY/ERROR roll-up |
 | **Orders** | |

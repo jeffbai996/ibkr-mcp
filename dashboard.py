@@ -47,9 +47,10 @@ def _param_errors_to_400(handler):
     return _wrapped
 
 from app import mcp
+from core.accounts import base_currency as account_base_currency, CURRENCY_UNAVAILABLE
 from core.formatting import get_decimal
 from core import SNAPSHOT_SETTLE_SECS
-from core.fx import apply_fx_fallbacks, build_fx_cache
+from core.fx import apply_fx_fallbacks, build_fx_cache, fx_convert
 
 # Tool functions and input models
 from tools.account import (
@@ -199,9 +200,11 @@ def _account_summary_json(ib, account: str) -> dict:
         summary = ib.accountSummary(account)
     except Exception as e:
         logger.warning(f"accountSummary failed for {account}: {e}")
-        return {"account": account, "error": str(e)}
+        return {"account": account, "error": str(e), "currency": None,
+                "currency_warning": CURRENCY_UNAVAILABLE}
     if not summary:
-        return {"account": account, "error": "No summary available"}
+        return {"account": account, "error": "No summary available", "currency": None,
+                "currency_warning": CURRENCY_UNAVAILABLE}
 
     vals = {item.tag: (item.value, item.currency) for item in summary}
 
@@ -211,11 +214,12 @@ def _account_summary_json(ib, account: str) -> dict:
     maint_margin = get_decimal(vals, "MaintMarginReq")
     excess_init = get_decimal(vals, "ExcessLiquidity")
     cushion_raw = get_decimal(vals, "Cushion")
-    currency = vals.get("NetLiquidation", (None, "USD"))[1]
+    currency = account_base_currency(vals)
 
     return {
         "account": account,
         "currency": currency,
+        "currency_warning": CURRENCY_UNAVAILABLE if currency is None else None,
         "nlv": _to_float(nlv),
         "gpv": _to_float(gpv),
         "cash": _to_float(get_decimal(vals, "TotalCashValue")),
@@ -225,8 +229,8 @@ def _account_summary_json(ib, account: str) -> dict:
         "excess_liquidity": _to_float(excess_init),
         "full_excess_liquidity": _to_float(get_decimal(vals, "FullExcessLiquidity")),
         "cushion_pct": float(cushion_raw * 100) if cushion_raw is not None else None,
-        "leverage": float(gpv / nlv) if nlv and nlv != 0 else None,
-        "margin_util_pct": float(init_margin / nlv * 100) if nlv and nlv != 0 else None,
+        "leverage": float(gpv / nlv) if currency and nlv and gpv is not None else None,
+        "margin_util_pct": float(init_margin / nlv * 100) if currency and nlv and init_margin is not None else None,
     }
 
 
@@ -250,43 +254,41 @@ async def _positions_json(ib, account: str) -> list[dict]:
 
     # Base currency = the account's NLV currency (same convention the tools
     # layer uses). accountSummary is cheap and already fetched elsewhere.
-    base_currency = "USD"
+    base_currency = None
     try:
         summary = ib.accountSummary(account)
         for item in summary:
             if item.tag == "NetLiquidation":
-                base_currency = item.currency or "USD"
+                base_currency = account_base_currency({"NetLiquidation": (None, item.currency)})
                 break
     except Exception as e:
-        logger.warning(f"accountSummary failed for {account}, assuming USD base: {e}")
+        logger.warning(f"accountSummary failed for {account}; base currency unavailable: {e}")
 
     # {ccy: rate_to_base} for every non-base currency held. apply_fx_fallbacks
     # backfills static rates when the live snapshot is unavailable so a foreign
     # leg never silently keeps its native (unconverted) value.
     currencies = {p.contract.currency for p in items}
-    fx_cache = await build_fx_cache(ib, currencies, base_currency)
+    fx_cache = await build_fx_cache(ib, currencies, base_currency) if base_currency else {}
     used_fallbacks = apply_fx_fallbacks(fx_cache, currencies, base_currency)
-    estimated = bool(used_fallbacks)
+    estimated = base_currency is None or bool(used_fallbacks)
 
-    def _base_value(p) -> Decimal:
+    def _base_value(p) -> Decimal | None:
         """abs(marketValue) converted to base currency (Decimal money math)."""
-        mv = abs(Decimal(str(p.marketValue)))
-        ccy = p.contract.currency
-        if ccy != base_currency:
-            rate = fx_cache.get(ccy)
-            if rate is not None:
-                mv *= rate
-            else:
-                # No live rate and no fallback: leg is left native. Flag the
-                # whole response so downstream knows the weights are approximate
-                # rather than silently mixing units.
-                nonlocal estimated
-                estimated = True
+        # Canonical path (audit §6.G). No live rate and no fallback: leg is
+        # left native — flag the whole response so downstream knows the
+        # weights are approximate rather than silently mixing units.
+        mv, converted = fx_convert(
+            abs(Decimal(str(p.marketValue))), p.contract.currency, base_currency, fx_cache)
+        if not converted:
+            nonlocal estimated
+            estimated = True
         return mv
 
     base_values = {id(p): _base_value(p) for p in items}
-    total_value = sum(base_values.values())
-    items.sort(key=lambda p: base_values[id(p)], reverse=True)
+    complete_values = base_currency is not None and all(value is not None for value in base_values.values())
+    total_value = sum(base_values.values()) if complete_values else None
+    if base_currency:
+        items.sort(key=lambda p: (base_values[id(p)] is not None, base_values[id(p)] or Decimal(0)), reverse=True)
 
     return [
         {
@@ -298,12 +300,14 @@ async def _positions_json(ib, account: str) -> list[dict]:
             "market_value": p.marketValue,
             # base-currency value — clients must sum THIS, not the native
             # market_value, or CAD legs inflate gross/leverage (Jeff 2026-08-05)
-            "market_value_base": float(base_values[id(p)]),
+            "market_value_base": _to_float(base_values[id(p)]),
+            "base_currency": base_currency,
+            "currency_warning": CURRENCY_UNAVAILABLE if base_currency is None else None,
             "unrealized_pnl": p.unrealizedPNL if not math.isnan(p.unrealizedPNL) else None,
             "currency": p.contract.currency,
             "weight_pct": round(
                 float(base_values[id(p)] / total_value * 100), 2
-            ) if total_value else 0.0,
+            ) if total_value else (0.0 if complete_values else None),
             "estimated": estimated,
             "account": account,
         }
@@ -323,9 +327,16 @@ def _combine_account_summaries(results: list[dict]) -> dict:
     differ, combined_nlv is None and mixed_currency flags the frontend to show
     per-account values instead. Accounts with no NLV (errored) are skipped.
 
-    Returns {combined_nlv, currency, mixed_currency}.
+    Unknown units on a received NLV suppress the combined total too. In that
+    case currency_unavailable and currency_warning expose the reason.
+
+    Returns {combined_nlv, currency, mixed_currency}, with availability metadata
+    when an amount's currency is unknown.
     """
-    funded = [r for r in results if r.get("nlv") is not None and r.get("currency")]
+    funded = [r for r in results if r.get("nlv") is not None]
+    if any(r.get("currency") is None for r in funded):
+        return {"combined_nlv": None, "currency": None, "mixed_currency": False,
+                "currency_unavailable": True, "currency_warning": CURRENCY_UNAVAILABLE}
     if not funded:
         return {"combined_nlv": None, "currency": None, "mixed_currency": False}
 
@@ -898,6 +909,29 @@ SYSTEM_PROMPT = (
 # Try newer model first; fall back to 2.5-flash if the model ID is rejected.
 _GEMINI_MODELS = ["gemini-3.0-flash", "gemini-2.5-flash"]
 
+MAX_QUERY_PROMPT_CHARS = 4000
+
+
+def parse_query_body(body) -> str:
+    """Validate the /api/query body and return the prompt.
+
+    Raises ValueError (-> 400 via _param_errors_to_400) for anything that is
+    not a JSON object with a non-empty, bounded ``prompt`` string. The
+    system instruction is NOT a caller input (F-03): the read-only guardrail
+    is fixed server-side and a caller-supplied ``system`` is dropped rather
+    than appended, so nothing a caller sends can sit next to the guardrail.
+    """
+    if not isinstance(body, dict):
+        raise ValueError("body must be a JSON object")
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError("prompt must be a non-empty string")
+    if len(prompt) > MAX_QUERY_PROMPT_CHARS:
+        raise ValueError(f"prompt exceeds {MAX_QUERY_PROMPT_CHARS} characters")
+    if "system" in body:
+        logger.warning("/api/query: ignoring caller-supplied system prompt (F-03)")
+    return prompt.strip()
+
 
 @mcp.custom_route("/api/query", methods=["POST"])
 @_param_errors_to_400
@@ -908,13 +942,14 @@ async def api_query(request: Request) -> JSONResponse:
     if not MCP_URL:
         return JSONResponse({"error": "MCP_URL not configured"})
 
-    body = await request.json()
-    prompt = body.get("prompt", "")
-    # F-03: a caller-supplied `system` must NOT replace the read-only guardrail
-    # (that let any caller strip "Do NOT use ibkr_quote / return raw output").
-    # Append it instead, so the guardrail always leads and can't be overridden.
-    caller_system = (body.get("system") or "").strip()
-    system = f"{SYSTEM_PROMPT}\n\n{caller_system}" if caller_system else SYSTEM_PROMPT
+    # Malformed JSON raises ValueError -> 400 via the decorator, as does a
+    # missing/empty/oversized prompt or a non-object body. No Gemini call and
+    # no MCP session is opened for a request that fails this contract.
+    prompt = parse_query_body(await request.json())
+    # F-03: the guardrail is the whole system instruction. A caller-supplied
+    # `system` used to replace it (letting any caller strip "Do NOT use
+    # ibkr_quote / return raw output"); it is now ignored entirely.
+    system = SYSTEM_PROMPT
 
     try:
         gemini = genai.Client(api_key=GEMINI_API_KEY)
