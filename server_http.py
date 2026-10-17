@@ -568,6 +568,7 @@ if oauth_wiring.oauth_enabled():
     from auth import unlock as _unlock  # noqa: E402
     mcp.custom_route("/oauth/unlock", methods=["GET"])(_unlock.unlock_get)
     mcp.custom_route("/oauth/unlock", methods=["POST"])(_unlock.unlock_post)
+    mcp.custom_route("/oauth/continue", methods=["GET"])(_unlock.continue_get)
 import tools.selftest     # noqa: F401, E402
 import tools.news         # noqa: F401, E402
 import tools.fundamentals # noqa: F401, E402
