@@ -93,6 +93,8 @@ def _sync_live_ctx() -> None:
         "secondary_account": _secondary_account,
         "account_map": _account_map,
         "health": _health,
+        "health2": _health2,
+        "secondary_configured": bool(IB_PORT_2),
         "health_map": _health_map,
     })
 

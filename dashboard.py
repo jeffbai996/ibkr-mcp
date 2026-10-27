@@ -474,9 +474,13 @@ async def _fetch_overnight_prices(symbols: list[str]) -> dict:
         for c in qualified:
             t = ib.ticker(c)
             last = price_or_none(t.last) if t else None
+            bid = price_or_none(getattr(t, "bid", None)) if t else None
+            ask = price_or_none(getattr(t, "ask", None)) if t else None
             close = price_or_none(t.close) if t else None
+            if last is None and bid is not None and ask is not None:
+                last = (float(bid) + float(ask)) / 2.0
             if last is None:
-                continue                      # no print → let yahoo answer
+                continue                      # no print → let google/yahoo answer
             row = {
                 "symbol": c.symbol, "price": last,
                 "previous_close": close,
@@ -493,25 +497,53 @@ async def _fetch_overnight_prices(symbols: list[str]) -> dict:
         return {}
 
 
+def _fetch_google_quote(symbol: str) -> dict | None:
+    """Google Finance quote adapter for /api/prices. Returns None on miss so the
+    caller falls through to Yahoo Finance."""
+    from core.google_finance import fetch_google_finance_quote
+
+    return fetch_google_finance_quote(symbol)
+
+
 @mcp.custom_route("/api/prices", methods=["GET"])
 @_param_errors_to_400
 async def api_prices(request: Request) -> JSONResponse:
     """Live prices. Overnight (Sun 20:00 → Fri 20:00 ET, ex-daytime) the
     IBKR OVERNIGHT venue answers first — yahoo's REST side freezes at the
-    20:00 print all night. Yahoo fills whatever IB has no book for."""
+    20:00 print all night. Google Finance answers next (extended hours + Asian
+    and European cash sessions), and Yahoo fills whatever remains."""
     raw = request.query_params.get("symbols", "")
     symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
     ibkr = await _fetch_overnight_prices(symbols)
-    remaining = [s for s in symbols if s not in ibkr]
+    after_ibkr = [s for s in symbols if s not in ibkr]
+
+    gfin: dict[str, dict] = {}
+    if after_ibkr:
+        gfin_fetched = await asyncio.gather(
+            *(asyncio.to_thread(_fetch_google_quote, sym) for sym in after_ibkr)
+        )
+        for sym, q in zip(after_ibkr, gfin_fetched):
+            if isinstance(q, dict) and q.get("price") is not None and not q.get("error"):
+                gfin[sym] = q
+
+    remaining = [s for s in after_ibkr if s not in gfin]
     # yfinance is blocking, so each symbol goes to a worker thread and they run
     # concurrently. Serially inline this stalled the event loop for the sum of
     # every symbol's round-trip, freezing all other /api routes meanwhile.
     fetched = await asyncio.gather(
         *(asyncio.to_thread(_fetch_yahoo_quote, sym) for sym in remaining)
     )
-    results = {**dict(zip(remaining, fetched)), **ibkr}
-    return JSONResponse({"prices": results,
-                         "source": "ibkr_overnight+yahoo" if ibkr else "yahoo_finance"})
+    yahoo = dict(zip(remaining, fetched))
+    results = {**yahoo, **gfin, **ibkr}
+
+    sources_used = []
+    if ibkr:
+        sources_used.append("ibkr_overnight")
+    if gfin:
+        sources_used.append("google_finance")
+    if yahoo or not sources_used:
+        sources_used.append("yahoo_finance" if not sources_used else "yahoo")
+    return JSONResponse({"prices": results, "source": "+".join(sources_used)})
 
 
 # ── Tool Proxy Routes (return markdown) ──────────────────────────────
