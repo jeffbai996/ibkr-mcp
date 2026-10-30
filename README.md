@@ -2,6 +2,10 @@
 
 An MCP server that lets a language model read and reason about an Interactive Brokers account. It exposes 41 read-only tools over the [Model Context Protocol](https://modelcontextprotocol.io), covering margin, risk, market data, news, fundamentals and portfolio analysis.
 
+[![Python](https://img.shields.io/badge/python-3.12-a4262c?style=flat-square&logo=python&logoColor=white)](server_http.py)
+[![MCP](https://img.shields.io/badge/MCP-41_tools-a4262c?style=flat-square)](https://modelcontextprotocol.io)
+[![Read-only](https://img.shields.io/badge/broker_access-read--only-a4262c?style=flat-square)](#)
+
 Ask a question in plain language, such as *"how far can the book fall before a margin call?"*. The model picks the tools, chains them, and answers with live numbers from the broker. Nothing here can place an order.
 
 > This repository is the public server layer of a system I run for my own trading. The tool implementations (`core/`, `tools/`) are private and are stripped out when it is published, so the code here does not run on its own. It is published to show how the pieces fit together and what building against the IBKR API involves.
