@@ -9,4 +9,7 @@ so they all reference the same mcp object.
 from mcp.server.fastmcp import FastMCP
 from core.connection import ib_lifespan
 
+from core import call_log
+
 mcp = FastMCP("ibkr_mcp", lifespan=ib_lifespan)
+call_log.install(mcp)

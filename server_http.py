@@ -55,6 +55,7 @@ from ib_insync import IB
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Icon
 
+from core import call_log
 from config import (
     IB_HOST, IB_PORT, IB_CLIENT_ID, IB_TIMEOUT, IB_READONLY,
     PRIMARY_ACCOUNT, IB_PORT_2, IB_CLIENT_ID_2, SECONDARY_ACCOUNT,
@@ -553,6 +554,7 @@ _ICONS = [Icon(
 app.mcp = FastMCP("ibkr_mcp", lifespan=http_lifespan, icons=_ICONS,
                   **oauth_wiring.fastmcp_auth_kwargs())
 mcp = app.mcp
+call_log.install(mcp)
 
 # --- Register tool modules (they import mcp from app.py) ---
 import tools.account      # noqa: F401, E402

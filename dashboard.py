@@ -79,6 +79,7 @@ from tools.intelligence import (
 from tools.briefing import (
     ibkr_geopolitical_risk, ibkr_thesis_check, GeopoliticalInput, ThesisCheckInput,
 )
+from tools.selftest import ibkr_selftest, SelfTestInput
 from tools.live_data import (
     ibkr_compare_performance,
     ibkr_get_option_chain,
@@ -229,8 +230,8 @@ def _account_summary_json(ib, account: str) -> dict:
         "excess_liquidity": _to_float(excess_init),
         "full_excess_liquidity": _to_float(get_decimal(vals, "FullExcessLiquidity")),
         "cushion_pct": float(cushion_raw * 100) if cushion_raw is not None else None,
-        "leverage": float(gpv / nlv) if currency and nlv and gpv is not None else None,
-        "margin_util_pct": float(init_margin / nlv * 100) if currency and nlv and init_margin is not None else None,
+        "leverage": float(gpv / abs(nlv)) if currency and nlv and gpv is not None else None,
+        "margin_util_pct": float(init_margin / abs(nlv) * 100) if currency and nlv and init_margin is not None else None,
     }
 
 
@@ -387,14 +388,17 @@ async def api_positions(request: Request) -> JSONResponse:
         key = f"{p['symbol']}_{p['currency']}"
         if key not in merged:
             merged[key] = {"symbol": p["symbol"], "currency": p["currency"],
-                           "shares": 0, "market_value": 0.0, "unrealized_pnl": 0.0}
-        merged[key]["shares"] += p["shares"]
-        merged[key]["market_value"] += p["market_value"]
+                           "shares": Decimal("0"), "market_value": Decimal("0"), "unrealized_pnl": Decimal("0")}
+        merged[key]["shares"] += Decimal(str(p["shares"]))
+        merged[key]["market_value"] += Decimal(str(p["market_value"]))
         if p["unrealized_pnl"] is not None:
-            merged[key]["unrealized_pnl"] += p["unrealized_pnl"]
+            merged[key]["unrealized_pnl"] += Decimal(str(p["unrealized_pnl"]))
 
     merged_list = sorted(merged.values(), key=lambda x: abs(x["market_value"]), reverse=True)
-    return JSONResponse({"positions": all_positions, "merged": merged_list})
+    return JSONResponse({"positions": all_positions, "merged": [
+        {key: float(value) if isinstance(value, Decimal) else value for key, value in row.items()}
+        for row in merged_list
+    ]})
 
 
 # ── Yahoo Finance Prices ─────────────────────────────────────────────
@@ -614,8 +618,7 @@ async def api_what_if(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/fills", methods=["GET"])
 @_param_errors_to_400
 async def api_fills(request: Request) -> JSONResponse:
-    """Structured executions (JSON, not markdown) — feeds fragwire's fills
-    ledger. IB serves ~7 days back; the ledger's daily sweep + exec_id
+    """Structured executions (JSON, not markdown) for a fills ledger. IB serves ~7 days back; the ledger's daily sweep + exec_id
     dedupe turns that window into permanent history."""
     from datetime import datetime, timedelta
 
@@ -849,6 +852,14 @@ async def api_thesis(request: Request) -> JSONResponse:
         return JSONResponse({"error": "news_item required"}, status_code=400)
     params = ThesisCheckInput(news_item=news)
     return JSONResponse({"markdown": await ibkr_thesis_check(params, ctx)})
+
+
+@mcp.custom_route("/api/selftest", methods=["GET"])
+@_param_errors_to_400
+async def api_selftest(request: Request) -> JSONResponse:
+    ctx = await _ensure_connected_and_ctx()
+    params = SelfTestInput(verbose=request.query_params.get("verbose") == "1")
+    return JSONResponse({"markdown": await ibkr_selftest(params, ctx)})
 
 
 @mcp.custom_route("/api/rebalance", methods=["GET"])

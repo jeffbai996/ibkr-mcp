@@ -1,6 +1,6 @@
 # ibkr-mcp
 
-An MCP server that lets a language model read and reason about an Interactive Brokers account. It exposes 43 read-only tools over the [Model Context Protocol](https://modelcontextprotocol.io), covering margin, risk, market data, news, fundamentals and portfolio analysis.
+An MCP server that lets a language model read and reason about an Interactive Brokers account. It exposes 41 read-only tools over the [Model Context Protocol](https://modelcontextprotocol.io), covering margin, risk, market data, news, fundamentals and portfolio analysis.
 
 Ask a question in plain language, such as *"how far can the book fall before a margin call?"*. The model picks the tools, chains them, and answers with live numbers from the broker. Nothing here can place an order.
 
@@ -120,7 +120,6 @@ The other two scenarios are `drawdown`, which steps the drop in 1% increments an
 "Are these five names really five bets?"                   -> ibkr_correlation_matrix, 60 or 252 days
 "What is the one-day 99% VaR, and which name drives it?"   -> ibkr_var_estimate, with a per-position breakdown
 "How many days of cushion at a -1σ daily drift?"           -> ibkr_cushion_runway
-"Does this earnings headline threaten my thesis?"          -> ibkr_thesis_check against thesis_config.json
 "Rebalance to KRYX:30 VLTX:30 OMRA:40."                    -> ibkr_rebalance_planner
 ```
 
@@ -135,7 +134,7 @@ The other two scenarios are `drawdown`, which steps the drop in 1% increments an
 │  app.py          FastMCP     │ ◄────── │    persistence · technicals  │
 │  dashboard.py    /api/* REST │         │                              │
 │  config.py       env vars    │         │  tools/                      │
-└──────────┬───────────────────┘         │    43 tools, registered      │
+└──────────┬───────────────────┘         │    41 tools, registered      │
            │  ib_insync                  │    with @mcp.tool()          │
            ▼                             └──────────────────────────────┘
 ┌──────────────────────────────┐
@@ -152,18 +151,18 @@ The other two scenarios are `drawdown`, which steps the drop in 1% increments an
 
 - **Read-only.** The IBKR API can place orders; this server exposes no order path. What-if simulation runs through IB's margin engine with nothing sent to market. OAuth scopes are `read` and `propose`, so authenticating a client never widens what it can do.
 - **Stateless HTTP.** Clients that cached dead session IDs, or raced on overlapping SSE streams, broke stateful mode. Every request stands alone, and all real state lives in the gateway.
-- **Short tool docstrings.** Each is one or two sentences, so the schema for all 43 tools stays small at session start.
+- **Short tool docstrings.** Each is one or two sentences, so the schema for all 41 tools stays small at session start.
 - **Currency is never assumed.** Base currency comes from the account's `NetLiquidation` currency. When it is missing, monetary tools stop rather than assume USD.
 - **One private repository, a generated public one.** The tool layer carries portfolio-specific calibration: thesis pillars, sector maps, risk factors. Development happens in one private repository. A build step copies only an allowlist of files into this one, after a PII scan.
 
 ## Tools
 
-All 43 tools, grouped by what they answer. The implementations are private; this is the surface the model works with.
+All 41 tools, grouped by what they answer. The implementations are private; this is the surface the model works with.
 
 | Group | Tools |
 |---|---|
 | Account | `ibkr_get_account_summary` NLV, cash, buying power, margin, cushion, leverage · `ibkr_margin` distance to call and per-symbol efficiency · `ibkr_list_accounts` · `ibkr_get_account_pnl` daily realized and unrealized · `ibkr_consolidated_view` across two gateways, FX-converted |
-| Briefing | `ibkr_briefing` · `ibkr_geopolitical_risk` news on held names, severity-rated · `ibkr_thesis_check` news against your thesis pillars |
+| Briefing | `ibkr_briefing` |
 | Portfolio | `ibkr_get_positions` cost basis, P&L, weights |
 | Market data | `ibkr_quote` single, comparison or portfolio (alias `ibkr_get_quote`) · `ibkr_get_historical_bars` · `ibkr_get_contract_details` · `ibkr_get_option_chain` with Greeks · `ibkr_dividends` calendar and income estimate · `ibkr_search_contracts` |
 | Live data | `ibkr_get_fx_rate` · `ibkr_get_intraday` 1-minute bars · `ibkr_compare_performance` · `ibkr_technicals` SMA, RSI, MACD, Bollinger |
@@ -204,7 +203,7 @@ Environment variables are loaded from `.env`; `env.example` lists them with defa
 | `MCP_HTTP_TOKEN` | unset | Bearer token for `/mcp` and `/api/*`. Unset means no auth. |
 | `IBKR_MCP_OAUTH_ENABLED` | off | OAuth 2.1 on `/mcp` (PKCE, dynamic client registration) for clients such as claude.ai. Needs `IBKR_MCP_OAUTH_ISSUER_URL`. `/api/*` still uses the bearer token. |
 
-`thesis_config.json` holds the thesis pillars read by `ibkr_thesis_check`, and `risk_factors.json` the geopolitical risk factors that `ibkr_geopolitical_risk` maps to held positions. Both ship here as generic templates.
+`thesis_config.json` holds the thesis pillars and `risk_factors.json` the geopolitical risk factors, both read by the dashboard's thesis and risk panels. Both ship here as generic templates.
 
 ## Stack
 
