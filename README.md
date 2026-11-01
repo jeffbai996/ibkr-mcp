@@ -1,6 +1,6 @@
 # ibkr-mcp
 
-An MCP server that lets a language model read and reason about an Interactive Brokers account. It exposes 41 read-only tools over the [Model Context Protocol](https://modelcontextprotocol.io), covering margin, risk, market data, news, fundamentals and portfolio analysis.
+An MCP server that lets a language model read an Interactive Brokers account. It exposes 41 read-only tools over the [Model Context Protocol](https://modelcontextprotocol.io), covering margin, risk, market data, news, fundamentals and portfolio analysis.
 
 [![Python](https://img.shields.io/badge/python-3.12-a4262c?style=flat-square&logo=python&logoColor=white)](server_http.py)
 [![MCP](https://img.shields.io/badge/MCP-41_tools-a4262c?style=flat-square)](https://modelcontextprotocol.io)
@@ -25,29 +25,29 @@ _2026-10-27 13:32:05 UTC_
 ## Account Health
 | Metric               | Value              |
 |----------------------|--------------------|
-| NLV                  | $412,600.00 USD    |
-| Gross Position Value | $968,400.00 USD    |
+| NLV                  | $41,260.00 USD     |
+| Gross Position Value | $96,840.00 USD     |
 | Leverage             | 2.35x              |
 | Cushion              | 12.4% — OK         |
 | Margin Utilization   | 96.4%              |
-| Excess Liquidity     | $51,150.00 USD     |
-| Init Margin          | $397,600.00 USD    |
-| Maint Margin         | $361,450.00 USD    |
+| Excess Liquidity     | $5,115.00 USD      |
+| Init Margin          | $39,760.00 USD     |
+| Maint Margin         | $36,145.00 USD     |
 _Cushion 12.4% (7d ago 10.9%, Δ+1.5pt; 30d peak 15.2%)_
 _Leverage 2.35x (7d ago 2.48x, Δ-0.13x; 30d peak 2.61x)_
 
 ## Daily P&L
-**Daily**: +$6,184.00 USD (+1.50% of NLV)
-**Unrealized**: +$167,210.00 USD
+**Daily**: +$618.40 USD (+1.50% of NLV)
+**Unrealized**: +$16,721.00 USD
 
 ## Positions
 | Symbol | Shares | Price   | Value       | Daily P&L        | Unreal P&L         | Weight  |
 |--------|--------|---------|-------------|------------------|--------------------|---------|
-| KRYX   | 2,400  | $148.25 | $355,800.00 | +$7,320 (+2.1%)  | +$118,400 (+49.9%) | +86.23% |
-| VLTX   | 1,850  | $121.40 | $224,590.00 | $-1,813 (-0.8%)  | +$31,200 (+16.1%)  | +54.43% |
-| OMRA   |   900  | $212.30 | $191,070.00 | +$2,637 (+1.4%)  | $-8,930 (-4.5%)    | +46.31% |
-| FELN   | 3,200  | $38.65  | $123,680.00 | $-2,400 (-1.9%)  | +$22,480 (+22.2%)  | +29.98% |
-| HDRX   | 1,100  | $66.60  | $73,260.00  | +$440 (+0.6%)    | +$4,060 (+5.9%)    | +17.76% |
+| KRYX   | 240    | $148.25 | $35,580.00  | +$732 (+2.1%)    | +$11,840 (+49.9%)  | +86.23% |
+| VLTX   | 185    | $121.40 | $22,459.00  | $-181 (-0.8%)    | +$3,120 (+16.1%)   | +54.43% |
+| OMRA   | 90     | $212.30 | $19,107.00  | +$264 (+1.4%)    | $-893 (-4.5%)      | +46.31% |
+| FELN   | 320    | $38.65  | $12,368.00  | $-240 (-1.9%)    | +$2,248 (+22.2%)   | +29.98% |
+| HDRX   | 110    | $66.60  | $7,326.00   | +$44 (+0.6%)     | +$406 (+5.9%)      | +17.76% |
 
 ## Open Orders
 No open orders.
@@ -65,7 +65,7 @@ One call combines the account summary, the portfolio, the P&L subscription and t
 
 ```markdown
 # Break Levels: U████████
-**Current cushion**: +12.40% · **NLV**: $412,600.00 USD · **Gross**: $968,400.00 USD
+**Current cushion**: +12.40% · **NLV**: $41,260.00 USD · **Gross**: $96,840.00 USD
 
 ## Per-position — price at which portfolio cushion breaks
 _All-else-equal: only this name moves; the rest of the book is held flat._
@@ -81,9 +81,9 @@ _All-else-equal: only this name moves; the rest of the book is held flat._
 ## Whole-book — uniform market move to each cushion level
 | Cushion target | Book drop | NLV at break        |
 |----------------|-----------|---------------------|
-| 5.00%          | 5.46%     | $359,685.00 USD     |
-| 2.50%          | 7.01%     | $344,742.00 USD     |
-| 0.00%          | 8.43%     | $330,989.00 USD     |
+| 5.00%          | 5.46%     | $35,968.50 USD      |
+| 2.50%          | 7.01%     | $34,474.20 USD      |
+| 0.00%          | 8.43%     | $33,098.90 USD      |
 ```
 
 This is the inverse of a stress test. A stress test asks what a given drop would do. Break levels ask how large a drop the account can take, one name at a time and for the whole book. A dash means that name alone cannot break the account.
@@ -98,18 +98,18 @@ Account: U████████
 
 ## Verdict: 🚨 DANGER
 
-**Current Equity**: $412,600.00 USD
-**Gross Position Value**: $968,400.00 USD
-**Current Maint Margin**: $361,450.00 USD
+**Current Equity**: $41,260.00 USD
+**Gross Position Value**: $96,840.00 USD
+**Current Maint Margin**: $36,145.00 USD
 
-**Stressed Equity** (after 10.0% drop): $315,760.00 USD
-**Stressed Maint Margin**: $325,305.00 USD
-**Buffer**: $-9,545.00 USD
-**Buffer (vol-adj ×1.0318 maint)**: $-19,890.00 USD
-**Init Margin Buffer**: $-42,080.00 USD
-⚠️ **Margin call zone** — init margin breached by $42,080.00 USD
+**Stressed Equity** (after 10.0% drop): $31,576.00 USD
+**Stressed Maint Margin**: $32,530.50 USD
+**Buffer**: $-954.50 USD
+**Buffer (vol-adj ×1.0318 maint)**: $-1,989.00 USD
+**Init Margin Buffer**: $-4,208.00 USD
+⚠️ **Margin call zone** — init margin breached by $4,208.00 USD
 
-🚨 **Maintenance margin breached by $9,545.00 USD.**
+🚨 **Maintenance margin breached by $954.50 USD.**
 Forced liquidation would begin at this drawdown level.
 
 _Shock model: equity-beta by signed exposure — long equity 100.0% of gross loses, short equity 0.0% gains, zero-beta 0.0% flat; maint re-rated on the post-shock book at the current rate._
@@ -120,7 +120,7 @@ The other two scenarios are `drawdown`, which steps the drop in 1% increments an
 ### More from the same session
 
 ```text
-"If I buy 500 OMRA, what happens to excess liquidity?"     -> ibkr_what_if (IB's whatIfOrder; no order is sent)
+"If I buy 50 OMRA, what happens to excess liquidity?"      -> ibkr_what_if (IB's whatIfOrder; no order is sent)
 "Are these five names really five bets?"                   -> ibkr_correlation_matrix, 60 or 252 days
 "What is the one-day 99% VaR, and which name drives it?"   -> ibkr_var_estimate, with a per-position breakdown
 "How many days of cushion at a -1σ daily drift?"           -> ibkr_cushion_runway
@@ -147,9 +147,9 @@ The other two scenarios are `drawdown`, which steps the drop in 1% increments an
 └──────────────────────────────┘
 ```
 
-- **One tool surface, two transports.** `server_http.py` is the transport in use. It owns a reconnect loop, periodic account snapshots and an offline cache. `server.py` (stdio) has none of these and is kept for local testing. Both share the FastMCP instance in `app.py`. `server_http.py` replaces that instance with a stateless HTTP one before the tool modules import, so the `@mcp.tool()` decorators bind to the right transport.
+- **One tool surface, two transports.** `server_http.py` is the transport in use. It runs a reconnect loop, takes periodic account snapshots and keeps an offline cache. `server.py` (stdio) has none of these and is kept for local testing. Both share the FastMCP instance in `app.py`. `server_http.py` replaces that instance with a stateless HTTP one before the tool modules import, so the `@mcp.tool()` decorators bind to the right transport.
 - **Dashboard on the same port.** `dashboard.py` adds `/api/*` REST routes to the same app (positions, summary, FX, technicals, history) for a separate frontend.
-- **Built to survive gateway outages.** IB Gateway restarts daily, and it drops sessions when you log in from another machine. A background loop reconnects every 30 seconds. During an outage, tools answer from the cache with a staleness banner instead of failing.
+- **Gateway outages are normal.** IB Gateway restarts daily, and it drops sessions when you log in from another machine. A background loop reconnects every 30 seconds. During an outage, tools answer from the cache with a staleness banner instead of failing.
 
 ## Design decisions
 
